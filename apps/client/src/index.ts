@@ -51,7 +51,7 @@ async function main() {
   if (command === 'disconnect') {
     if (!await confirm('将永久撤销本次SSH访问并终止操作。网络断开无需执行此命令。确认主动断开？')) return;
     const result = await localRevoke(store, hooks);
-    console.log(result.phase === 'cleaned' ? '已断开并清理，请删除下载的连接脚本。' : '本地已撤销，清理或补交待完成；禁止恢复访问。'); return;
+    console.log(result.phase === 'cleaned' ? '已断开并清理，请删除本次连接脚本或 ZIP 包及全部解压副本。' : '本地已撤销，清理或补交待完成；禁止恢复访问。'); return;
   }
   if (command === 'cleanup' || command === 'resume') {
     if (state.phase === 'revoked') {

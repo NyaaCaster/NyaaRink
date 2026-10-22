@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, copyFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, randomUUID } from 'node:crypto';
 import { verifyRelease } from '../apps/client/src/release.js';
-import { Artifacts } from '../apps/server/src/artifacts.js';
+import { Artifacts, windowsConnectionPackage, type ClientArtifact } from '../apps/server/src/artifacts.js';
+import { zipSync, unzipSync } from 'fflate';
+import { buildSync } from 'esbuild';
+import { spawnSync } from 'node:child_process';
+import { windowsEnvironment } from '../apps/client/src/windows.js';
 import { VERSION } from '@nyaarink/version';
 
 const roots: string[] = [];
@@ -52,3 +56,54 @@ describe('offline signed distribution boundary', () => {
     expect(() => new Artifacts(path, key)).toThrow('hash');
   });
 });
+
+const boot = () => ({ v: 1 as const, sessionId: randomUUID(), enrollmentId: randomUUID(), instanceId: randomUUID(), epoch: randomUUID(), origin: 'https://example.invalid:5116', bootstrapKey: 'a'.repeat(43), expiresAt: new Date(Date.now() + 600000).toISOString() });
+const winArtifact = (archive: Buffer, manifest: Buffer): ClientArtifact => ({ platform: 'win32', arch: 'x64', version: VERSION, filename: `nyaarink-client-${VERSION}-win32-x64.zip`, sha256: sha(archive), manifestSha256: sha(manifest) });
+it('builds a transparent ZIP with separate session credentials and an unchanged runtime archive', () => {
+  const archive = Buffer.from(zipSync({ 'fixture.txt': Buffer.from('signed runtime fixture') })), input = boot();
+  const artifact = winArtifact(archive, Buffer.from('manifest'));
+  const entries = unzipSync(windowsConnectionPackage(input, artifact, archive));
+  expect(Object.keys(entries).sort()).toEqual(['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat']);
+  expect(JSON.parse(Buffer.from(entries['bootstrap.json']!).toString())).toEqual(input);
+  expect(Buffer.from(entries['client-runtime.zip']!)).toEqual(archive);
+  const bat = Buffer.from(entries['start.bat']!).toString();
+  expect(bat).not.toMatch(/EncodedCommand|Invoke-WebRequest|ExecutionPolicy|https:|bootstrapKey/);
+  expect(bat).not.toContain(input.bootstrapKey); expect(bat).toContain('AccessControlSections]::Access');
+  expect(bat).toContain(artifact.sha256); expect(bat).toContain(artifact.manifestSha256);
+  expect(Buffer.from(entries['README.txt']!).toString()).toContain('AI Agent');
+  expect(() => windowsConnectionPackage(input, artifact, Buffer.from('changed'))).toThrow('hash');
+});
+it.skipIf(process.platform !== 'win32')('runs the BAT from a Chinese space path and blocks package/signature tampering before installation', () => {
+  const { path, pair, key } = fixture();
+  const source = new URL('../apps/client/src/release.ts', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+  const verifier = buildSync({ stdin: { contents: `import { verifyRelease } from ${JSON.stringify(source)}; verifyRelease(process.argv[2], process.argv[3], 'win32', ${JSON.stringify(key)});`, resolveDir: process.cwd() }, bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0]!.contents;
+  copyFileSync(process.execPath, join(path, 'node.exe'));
+  writeFileSync(join(path, 'verify.cjs'), verifier);
+  // Safe installation sentinel: never touches SSH, autorun or real credentials.
+  writeFileSync(join(path, 'client.cjs'), "require('node:fs').writeFileSync(process.env.NR_TEST_INSTALLED, process.argv.slice(2).join(' '))");
+  const names = ['node.exe', 'verify.cjs', 'client.cjs', 'LICENSE', 'NODE-LICENSE', 'THIRD-PARTY-NOTICES'];
+  const files = Object.fromEntries(names.map(name => [name, readFileSync(join(path, name))]));
+  const manifest = Buffer.from(JSON.stringify({ v: 1, version: VERSION, platform: 'win32', arch: 'x64', nodeVersion: process.versions.node, minimumSystem: 'test fixture', files: Object.fromEntries(names.map(name => [name, sha(files[name]!)])) }));
+  const signature = sign(null, manifest, pair.privateKey);
+  const runtime = { ...files, 'manifest.json': manifest, 'manifest.sig': signature };
+  const archive = Buffer.from(zipSync(runtime, { level: 1 })), artifact = winArtifact(archive, manifest);
+  const before = readdirSync(process.env.LOCALAPPDATA!).filter(name => name.startsWith('NyaaRink-bootstrap-')).sort();
+  const run = (label: string, pack: Buffer, expected: number) => {
+    const target = join(directory(), `中文 空格 & ${label}`);
+    const entries = unzipSync(pack);
+    mkdirSync(target);
+    for (const [name, bytes] of Object.entries(entries)) writeFileSync(join(target, name), bytes);
+    const marker = join(target, 'installed.txt');
+    const result = spawnSync('cmd.exe', ['/d', '/c', 'start.bat'], { cwd: target, input: '\r\n', windowsHide: true, timeout: 60000, env: windowsEnvironment({ ...process.env, NR_TEST_INSTALLED: marker }), encoding: 'utf8' });
+    expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(expected);
+    expect(existsSync(marker)).toBe(expected === 0);
+    if (expected === 0) expect(readFileSync(marker, 'utf8')).toContain('install --bootstrap');
+  };
+  run('正常', windowsConnectionPackage(boot(), artifact, archive), 0);
+  const brokenEntries = unzipSync(windowsConnectionPackage(boot(), artifact, archive)); brokenEntries['client-runtime.zip'] = Buffer.from('changed');
+  run('包篡改', Buffer.from(zipSync(brokenEntries, { level: 0 })), 1);
+  const badSignature = Buffer.from(signature); badSignature[0] = badSignature[0]! ^ 1;
+  const badArchive = Buffer.from(zipSync({ ...runtime, 'manifest.sig': badSignature }, { level: 1 }));
+  run('签名篡改', windowsConnectionPackage(boot(), winArtifact(badArchive, manifest), badArchive), 1);
+  expect(readdirSync(process.env.LOCALAPPDATA!).filter(name => name.startsWith('NyaaRink-bootstrap-')).sort()).toEqual(before);
+}, 180000);

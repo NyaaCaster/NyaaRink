@@ -32,9 +32,9 @@ export function routes(service: RinkService, config: RouteConfig, artifacts?: Ar
     const raw = token(), next = raw + '.' + mac(cookieKey, raw);
     res.cookie('__Host-nr', next, { secure: true, httpOnly: true, sameSite: 'strict', path: '/', maxAge: 365 * 24 * 3600_000 }); return next;
   };
-  const limit = (scope: string, maximum: number) => (req: Request, _res: Response, next: NextFunction) => {
+  const limit = (scope: string, maximum: number, authenticatedBrowser = false) => (req: Request, res: Response, next: NextFunction) => {
     const now = Date.now(); for (const [key, b] of buckets) if (b.until <= now) buckets.delete(key);
-    const key = scope + ':' + req.socket.remoteAddress;
+    const key = scope + ':' + (authenticatedBrowser ? res.locals.browserHash : req.socket.remoteAddress);
     if (!buckets.has(key) && buckets.size >= 10000) throw new DomainError('LIMIT_EXCEEDED', 429);
     const b = buckets.get(key) ?? { count: 0, until: now + 60000 }; buckets.set(key, b);
     if (++b.count > maximum) throw new DomainError('LIMIT_EXCEEDED', 429); next();
@@ -105,11 +105,21 @@ export function routes(service: RinkService, config: RouteConfig, artifacts?: Ar
   });
   router.get('/api/v1/browser/session', (req, res) => { const value = browser(req, res); res.json({ ...service.browserSession(hash(value)), csrf: csrf(value) }); });
   router.post('/api/v1/browser/bootstrap', browserWrite, async (req, res) => { res.json(await service.bootstrap(res.locals.browserHash, requestKey(req))); });
-  router.post('/api/v1/browser/connection-script', browserWrite, async (req, res) => {
+  let activeDownloads = 0;
+  router.post('/api/v1/browser/connection-script', browserWrite, limit('connection-package', 3, true), async (req, res) => {
     if (!artifacts) throw new DomainError('OFFLINE', 503);
     const { platform } = z.object({ platform: z.enum(['win32', 'linux']) }).strict().parse(req.body);
-    const boot = await service.bootstrap(res.locals.browserHash, requestKey(req));
-    res.attachment(`NyaaRink-${boot.sessionId}.${platform === 'win32' ? 'bat' : 'sh'}`).type('text/plain').send(connectionScript(boot, artifacts.get(platform)));
+    if (activeDownloads >= 2) throw new DomainError('LIMIT_EXCEEDED', 429);
+    activeDownloads++;
+    let released = false;
+    const release = () => { if (!released) { released = true; activeDownloads--; } };
+    res.once('finish', release); res.once('close', release);
+    try {
+      const boot = await service.bootstrap(res.locals.browserHash, requestKey(req));
+      if (res.destroyed) { release(); return; }
+      if (platform === 'win32') res.attachment(`NyaaRink-${boot.sessionId}.zip`).type('application/zip').send(artifacts.windowsPackage(boot));
+      else res.attachment(`NyaaRink-${boot.sessionId}.sh`).type('text/plain').send(connectionScript(boot, artifacts.get(platform)));
+    } catch (error) { release(); throw error; }
   });
   router.post('/api/v1/browser/disconnect', browserWrite, async (req, res) => {
     const { sessionId } = z.object({ sessionId: Id }).strict().parse(req.body);

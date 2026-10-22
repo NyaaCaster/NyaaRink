@@ -45,18 +45,6 @@ describe('C installation and irreversible cleanup', () => {
     changeKey(file, id, key, false); expect(inspect()).toBe(originalAcl);
     expect(readFileSync(file, 'utf8')).toBe('# existing\n');
   }, 60000);
-  it.skipIf(process.platform !== 'win32')('executes the actual generated bootstrap directory setup without audit privilege', () => {
-    const text = connectionScript(bootstrap(), { platform: 'win32', arch: 'x64', version: '0.1.0', filename: 'nyaarink-client-0.1.0-win32-x64.zip', sha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64) });
-    const decoded = Buffer.from(text.split('-EncodedCommand ')[1]!.split('\r\n')[0]!, 'base64').toString('utf16le');
-    const directory = join(root(), 'bootstrap');
-    const prefix = decoded.split(' [Net.ServicePointManager]')[0]!.replace(/\$dir=Join-Path[^\n]+/, '$dir=$env:NR_BOOT_DIR');
-    const script = prefix + '\n$acl=[IO.Directory]::GetAccessControl($dir);if(!$acl.AreAccessRulesProtected){throw "Inheritance enabled"}\n} finally {}';
-    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-      env: windowsEnvironment({ ...process.env, NR_BOOT_DIR: directory }), windowsHide: true,
-    });
-    expect(existsSync(directory)).toBe(true);
-  }, 30000);
-
   it('pins the running Linux service executable and detects a main PID change during inspection', () => {
     expect(() => requireLinuxRuntime('123', '/usr/sbin/sshd', '123\n')).not.toThrow();
     for (const [pid, path, current] of [['0', '/usr/sbin/sshd', '0'], ['123', '/tmp/sshd', '123'], ['123', '/usr/sbin/sshd (deleted)', '123'], ['123', '/usr/sbin/sshd', '124']]) expect(() => requireLinuxRuntime(pid!, path!, current!)).toThrow();
@@ -203,9 +191,9 @@ describe('C installation and irreversible cleanup', () => {
   });
   it('pins script source, package digest, manifest digest and bootstrap without management keys', () => {
     const boot = bootstrap();
-    for (const platform of ['linux', 'win32'] as const) {
+    for (const platform of ['linux'] as const) {
       const text = connectionScript(boot, { platform, arch: 'x64', version: '0.1.0', filename: `nyaarink-client-0.1.0-${platform}-x64.zip`, sha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64) });
-      const decoded = platform === 'win32' ? Buffer.from(text.split('-EncodedCommand ')[1]!.split('\r\n')[0]!, 'base64').toString('utf16le') : text;
+      const decoded = text;
       expect(decoded).toContain(boot.origin); expect(decoded).toContain('a'.repeat(64)); expect(decoded).toContain('b'.repeat(64)); expect(decoded).not.toContain('MCP_API_KEY');
       expect(decoded).not.toMatch(/SkipCertificateCheck|curl .* -k/);
     }

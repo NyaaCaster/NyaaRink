@@ -7,13 +7,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import WebSocket from 'ws';
+import { unzipSync, zipSync } from 'fflate';
+import { createHash } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Authority } from '../apps/server/src/authority.js';
 import { RinkService } from '../apps/server/src/service.js';
 import { BrowserEvents } from '../apps/server/src/events.js';
 import { createApp } from '../apps/server/src/app.js';
-import type { Artifacts } from '../apps/server/src/artifacts.js';
+import { windowsConnectionPackage, type ClientArtifact, type Artifacts } from '../apps/server/src/artifacts.js';
 
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -26,7 +28,9 @@ async function fixture() {
   const origin = 'https://127.0.0.1:' + (server.address() as { port: number }).port;
   const masterKey = randomBytes(32), api = randomBytes(32).toString('hex'); Authority.initialize(join(root, 'authority'), masterKey);
   const service = await RinkService.open(new Authority(join(root, 'authority'), masterKey), join(root, 'state'), origin); cleanup.push(() => service.close());
-  const artifacts = { get: (platform: 'win32' | 'linux') => ({ platform, arch: 'x64', version: '0.1.0', filename: `nyaarink-client-0.1.0-${platform}-x64.${platform === 'win32' ? 'zip' : 'tar.gz'}`, sha256: '0'.repeat(64), manifestSha256: '0'.repeat(64) }) } as Artifacts;
+  const archive = Buffer.from(zipSync({ 'fixture.txt': Buffer.from('browser fixture only') }));
+  const windows: ClientArtifact = { platform: 'win32', arch: 'x64', version: '0.1.0', filename: 'nyaarink-client-0.1.0-win32-x64.zip', sha256: createHash('sha256').update(archive).digest('hex'), manifestSha256: '0'.repeat(64) };
+  const artifacts = { get: () => windows, windowsPackage: (input: unknown) => windowsConnectionPackage(input, windows, archive) } as unknown as Artifacts;
   server.on('request', createApp(service, { PUBLIC_BASE_URL: origin, MCP_API_KEY: api, MCP_API_KEY_PREVIOUS: '', API_KEY_PREVIOUS_UNTIL: '', masterKey }, artifacts));
   cleanup.push(() => { server.closeAllConnections(); return new Promise<void>(ok => server.close(() => ok())); });
   const events = new BrowserEvents(service, masterKey); events.attach(server); cleanup.push(() => events.close());
@@ -60,15 +64,30 @@ it('runs the real invitation UI, themes, script download, C revocation and inval
   await page.getByRole('checkbox').check(); await page.getByRole('button', { name: '接受访问', exact: true }).click();
   await browserExpect(page.getByRole('button', { name: '断开连接', exact: true })).toBeVisible(); expect(service.sessions.size).toBe(1);
   await page.getByRole('button', { name: 'Windows', exact: true }).click();
+  const response = page.waitForResponse(r => r.url().endsWith('/browser/connection-script'));
   const downloaded = page.waitForEvent('download'); await page.getByRole('button', { name: '下载连接脚本', exact: true }).click();
-  const download = await downloaded; expect(download.suggestedFilename()).toMatch(/^NyaaRink-.*\.bat$/); await download.delete();
+  const reply = await response; expect(reply.headers()['content-type']).toContain('application/zip'); expect(reply.headers()['cache-control']).toBe('no-store');
+  const download = await downloaded; expect(download.suggestedFilename()).toMatch(/^NyaaRink-.*\.zip$/);
+  const entries = unzipSync(readFileSync((await download.path())!));
+  expect(Object.keys(entries).sort()).toEqual(['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat']);
+  expect(JSON.parse(Buffer.from(entries['bootstrap.json']!).toString()).sessionId).toBe([...service.sessions.keys()][0]);
+  expect(Buffer.from(entries['start.bat']!).toString()).not.toMatch(/EncodedCommand|Invoke-WebRequest/);
+  await download.delete();
+  const downloadHeaders = await reply.request().allHeaders();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const retry = await context.request.post(reply.url(), { headers: downloadHeaders, data: { platform: 'win32' } });
+    expect(retry.status()).toBe(attempt < 2 ? 200 : 429); await retry.dispose();
+  }
+
+  const denied = await context.request.post(new URL('/api/v1/browser/connection-script', invite.inviteUrl).href, { data: { platform: 'win32' } });
+  expect(denied.status()).toBe(403); expect(denied.headers()['cache-control']).toBe('no-store');
   const stranger = await instance.newContext({ ignoreHTTPSErrors: true }); const other = await stranger.newPage(); await other.goto(invite.inviteUrl);
   await browserExpect(other.getByRole('heading', { name: '此链接没有有效邀请。' })).toBeVisible(); await stranger.close();
   await page.getByRole('button', { name: '断开连接', exact: true }).click();
   await browserExpect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('button', { name: '确认断开连接', exact: true }).focus(); await page.keyboard.press('Enter');
   await browserExpect(page.getByRole('heading', { name: '访问权限已撤销' })).toBeVisible();
-  await browserExpect(page.getByText('请删除下载的本次连接脚本。', { exact: true })).toBeVisible();
+  await browserExpect(page.getByText('请删除本次连接脚本或 ZIP 包及全部解压副本。', { exact: true })).toBeVisible();
   await page.reload(); await browserExpect(page.getByRole('heading', { name: '此链接没有有效邀请。' })).toBeVisible();
   expect(errors).toEqual([]); await context.close();
 }, 60000);
