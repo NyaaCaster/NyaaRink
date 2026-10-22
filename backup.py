@@ -6,7 +6,7 @@ from pathlib import Path
 import os
 import sqlite3
 import uuid
-from scripts.ops import environment, main, run
+from scripts.ops import environment, main, maintenance
 
 
 def backup_database(state):
@@ -44,7 +44,7 @@ def action():
         backup_database(env['STATE_DIR'])
         print('Consistent database backup completed in private state backups directory.')
     else:
-        run(['node', str(root / 'dist/server/maintenance.js'), 'backup-authority'], env=env, cwd=root)
+        maintenance(root, env, ['backup-authority'])
 
 
 if __name__ == '__main__':

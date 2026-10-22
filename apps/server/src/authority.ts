@@ -26,7 +26,7 @@ export class Authority extends EventEmitter {
   static initialize(directory: string, key: Buffer) {
     if (key.length !== 32) throw new Error('Invalid master key length');
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    if (readdirSync(directory).length) throw new Error('Refuse to replace authority');
+    if (readdirSync(directory).some(name => name !== '.process.lock')) throw new Error('Refuse to replace authority');
     const identity: Identity = { instanceId: randomUUID(), epoch: randomUUID(), v: 1 };
     durableWrite(join(directory, 'identity.json'), JSON.stringify({ identity, hmac: mac(key, JSON.stringify(identity)) }));
     durableWrite(join(directory, 'events.bin'), Buffer.alloc(0));

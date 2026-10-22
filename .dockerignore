@@ -32,3 +32,5 @@ coverage
 .mcp.json
 __pycache__
 .tmp
+
+.restart.lock

@@ -29,11 +29,14 @@ try {
     const files = hub ? new Files(hub) : undefined;
     const shells = hub ? new Shells(hub, req => authorized(req, config)) : undefined;
     const events = service ? new BrowserEvents(service, config.masterKey) : undefined;
-    const server = createApp(service, config, artifacts, native, operations, files, shells).listen(config.PORT, '0.0.0.0', () => console.log(`NyaaRink ${VERSION} | ${BLESSING}${authority.frozen ? ' | frozen' : ''}`));
+    let accepting = false;
+    const server = createApp(service, config, artifacts, native, operations, files, shells, () => accepting).listen(config.PORT, '0.0.0.0', () => console.log(`NyaaRink ${VERSION} | ${BLESSING}${authority.frozen ? ' | frozen' : ''}`));
     hub?.attach(server);
     shells?.attach(server);
     events?.attach(server);
+    accepting = true;
     for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => {
+      accepting = false;
       const stopped = operations?.close(); const flushed = hub?.close();
       shells?.close();
       events?.close();

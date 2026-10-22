@@ -35,3 +35,5 @@ __pycache__/
 
 # Workspace-only temporary preparation record
 .docs/开发环境准备.md
+
+.restart.lock

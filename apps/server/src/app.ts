@@ -9,7 +9,7 @@ import type { Operations } from './operations.js';
 import type { Files } from './files.js';
 import type { Shells } from './shells.js';
 import { resolve } from 'node:path';
-export function createApp(service?: RinkService, config?: RouteConfig, artifacts?: Artifacts, native?: NativeSSH, operations?: Operations, files?: Files, shells?: Shells) {
+export function createApp(service?: RinkService, config?: RouteConfig, artifacts?: Artifacts, native?: NativeSSH, operations?: Operations, files?: Files, shells?: Shells, accepting: () => boolean = () => false) {
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => { res.locals.requestId = randomUUID(); res.setHeader('X-Request-Id', res.locals.requestId); res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
@@ -17,9 +17,12 @@ export function createApp(service?: RinkService, config?: RouteConfig, artifacts
   const json = express.json({ limit: '32kb', strict: true }), mcpJson = express.json({ limit: '1450kb', strict: true });
   app.use((req, res, next) => (req.path === '/mcp' ? mcpJson : json)(req, res, next));
   app.get('/health/live', (_req, res) => { res.json({ status: 'ok', version: VERSION }); });
-  // Until the authority and transport exist, this skeleton must never advertise readiness.
-  app.get('/health/ready', (_req, res) => { res.status(503).json({ status: 'not_implemented', version: VERSION }); });
-  app.get('/healthz', (_req, res) => { res.status(503).json({ status: service?.authority.frozen ? 'frozen' : 'not_implemented', version: VERSION }); });
+  const health: express.RequestHandler = (_req, res) => {
+    const ready = Boolean(service && config && artifacts && native && operations && files && shells && !service.authority.frozen && accepting());
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : service?.authority.frozen ? 'frozen' : 'unavailable', version: VERSION });
+  };
+  app.get('/health/ready', health);
+  app.get('/healthz', health);
   if (service && config) app.use(routes(service, config, artifacts, native, operations, files, shells));
   const web = resolve('dist/web');
   app.use('/assets', express.static(resolve(web, 'assets'), { dotfiles: 'ignore' }));

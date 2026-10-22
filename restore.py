@@ -1,6 +1,6 @@
 """Offline database projection recovery or read-only authority verification."""
 import argparse
-from scripts.ops import environment, main, run
+from scripts.ops import environment, main, maintenance
 
 
 def action():
@@ -15,7 +15,7 @@ def action():
         arguments = ['verify-authority']
     else:
         arguments = ['restore-database', args.database]
-    run(['node', str(root / 'dist/server/maintenance.js'), *arguments], env=env, cwd=root)
+    maintenance(root, env, arguments)
 
 
 if __name__ == '__main__':

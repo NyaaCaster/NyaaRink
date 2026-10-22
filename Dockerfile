@@ -14,7 +14,7 @@ COPY . .
 RUN npm run typecheck && npm run build && npm prune --omit=dev
 
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS app
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client ca-certificates util-linux && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/dist ./dist
@@ -25,7 +25,8 @@ RUN node --input-type=module -e "import Database from 'better-sqlite3'; import s
 RUN node --input-type=module -e "import { spawnSync } from 'node:child_process'; const r = spawnSync(process.execPath, ['dist/server/index.js'], { env: {}, encoding: 'utf8' }); if (r.status !== 1 || r.stderr.trim() !== 'NyaaRink startup refused: invalid or unavailable private configuration') { console.error(r.stderr); process.exit(1); }" && node dist/cli/index.js --version
 ENV NODE_ENV=production
 EXPOSE 3000
-CMD ["node", "dist/server/index.js"]
+ENTRYPOINT ["flock", "--nonblock", "--no-fork", "/private/authority/.process.lock"]
+CMD ["node", "dist/server/container-entry.js"]
 
 FROM nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8 AS gateway
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
