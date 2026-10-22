@@ -36,7 +36,7 @@ $null=New-Item -ItemType Directory -Path $dir
 try {
  $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
  $acl=[System.Security.AccessControl.DirectorySecurity]::new()
- $acl.SetSecurityDescriptorSddlForm(('O:'+ $sid +'D:P(A;OICI;FA;;;'+$sid+')(A;OICI;FA;;;SY)'))
+ $acl.SetSecurityDescriptorSddlForm(('O:'+ $sid +'D:P(A;OICI;FA;;;'+$sid+')(A;OICI;FA;;;SY)'),[System.Security.AccessControl.AccessControlSections]::Access)
  [IO.Directory]::SetAccessControl($dir,$acl)
  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
  Invoke-WebRequest -UseBasicParsing -Uri '${url}' -OutFile (Join-Path $dir 'package.zip') -MaximumRedirection 0

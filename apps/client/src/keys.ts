@@ -42,7 +42,10 @@ export function changeKey(path: string, sessionId: string, publicKey: string, ad
     if (process.platform === 'win32') {
       // Copy the existing DACL to the replacement before the atomic rename.
       if (existed) {
-        const script = '$ErrorActionPreference="Stop"; [IO.File]::SetAccessControl($env:NR_NEW,[IO.File]::GetAccessControl($env:NR_OLD))';
+        const script = '$ErrorActionPreference="Stop"; $section=[Security.AccessControl.AccessControlSections]::Access;' +
+          '$source=[IO.File]::GetAccessControl($env:NR_OLD,$section); $acl=[Security.AccessControl.FileSecurity]::new();' +
+          '$acl.SetSecurityDescriptorSddlForm($source.GetSecurityDescriptorSddlForm($section),$section);' +
+          '[IO.File]::SetAccessControl($env:NR_NEW,$acl)';
         execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: windowsEnvironment({ ...process.env, NR_NEW: temp, NR_OLD: path }), stdio: 'pipe', windowsHide: true });
       } else if (/administrators_authorized_keys/i.test(path)) {
         execFileSync('icacls.exe', [temp, '/inheritance:r', '/grant:r', '*S-1-5-32-544:F', '*S-1-5-18:F'], { stdio: 'pipe', windowsHide: true });

@@ -32,6 +32,7 @@ HTTPS及随脚本提供的校验防传输篡改，但同一S源被控制后仍�
 
 - 默认当前普通账户；检测root、管理员组成员、提升token时明确警示并再次确认，建议改用普通账户。不能仅检查shell是否“以管理员运行”来判定目标SSH权限。
 - 普通用户只追加自己的authorized_keys；Unix目录0700、文件0600。行带唯一会话标识，优先 `from="127.0.0.1,::1",restrict,pty`，允许shell/PTY与SFTP，禁止agent/X11/端口转发。安装时验证本机OpenSSH支持这些选项，失败则报告不支持，不静默移除限制。
+- Windows私密引导目录、状态目录及文件仅修改 DACL（`AccessControlSections.Access`），禁止用单参数 SDDL 重载隐式修改审计 SACL、所有者或组；不要求 `SeSecurityPrivilege`，不因此提升连接程序。替换已有授权文件时显式复制原 DACL 及继承保护。
 - Windows普通账户使用其profile的`.ssh/authorized_keys`及正确ACL；管理员账户可能受Match Group规则影响使用ProgramData下的administrators_authorized_keys，必须读取有效sshd配置并使用对应权限规则，不能写错文件后宣称授权成功。
 - 所有文件变更先读取与备份，原子写回，保留现有行与ACL；卸载按本次session唯一标识及完整公钥匹配删除，不能删除整个authorized_keys或其他会话的行。
 - 登记主机公钥须从可信本地配置/公钥文件取得，并与回环握手核对。S设置hostVerifier或严格known_hosts，不采用ssh2默认auto-accept。密钥轮换需C本地确认并签名更新绑定，网络错误不会自动信任新主机。

@@ -29,7 +29,7 @@ export function privatePath(path: string, directory = false) {
     const identity = execFileSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
     const sid = identity.match(/S-1-5-[0-9-]+/)?.[0]; if (!sid) throw new Error('Cannot determine account SID');
     const script = '$ErrorActionPreference="Stop"; $acl=[System.Security.AccessControl.' + (directory ? 'DirectorySecurity' : 'FileSecurity') + ']::new();' +
-      '$acl.SetSecurityDescriptorSddlForm($env:NR_SDDL); [System.IO.' + (directory ? 'Directory' : 'File') + ']::SetAccessControl($env:NR_PRIVATE_PATH,$acl)';
+      '$acl.SetSecurityDescriptorSddlForm($env:NR_SDDL,[System.Security.AccessControl.AccessControlSections]::Access); [System.IO.' + (directory ? 'Directory' : 'File') + ']::SetAccessControl($env:NR_PRIVATE_PATH,$acl)';
     const inherit = directory ? 'OICI' : '';
     execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       env: windowsEnvironment({ ...process.env, NR_PRIVATE_PATH: path, NR_SDDL: `O:${sid}D:P(A;${inherit};FA;;;${sid})(A;${inherit};FA;;;SY)` }), stdio: 'pipe', windowsHide: true,

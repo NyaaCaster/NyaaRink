@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { utils } from 'ssh2';
 import { install, localRevoke, type InstallHooks } from '../apps/client/src/install.js';
-import { StateStore, deviceKeys, type State } from '../apps/client/src/state.js';
+import { StateStore, deviceKeys, privatePath, type State } from '../apps/client/src/state.js';
 import { changeKey, keyLine } from '../apps/client/src/keys.js';
 import { DeviceApi } from '../apps/client/src/api.js';
 import { token } from '../apps/server/src/crypto.js';
@@ -23,6 +23,40 @@ function bootstrap(): BootstrapData { return { v: 1, sessionId: randomUUID(), en
 function state(boot: BootstrapData): State { const pair = deviceKeys(); return { v: 1, bootstrap: boot, phase: 'ready', devicePrivateKey: pair.privateKey, devicePublicKey: pair.publicKey, runtime: root(), cleanup: 'pending', reported: false, releaseVersion: '0.1.0' }; }
 const ssh = () => utils.generateKeyPairSync('ed25519', {}).public;
 describe('C installation and irreversible cleanup', () => {
+  it.skipIf(process.platform !== 'win32')('sets private directory/file DACLs and preserves existing SSH ACLs without audit privilege', () => {
+    if (process.env.NR_REQUIRE_NO_SECURITY_PRIVILEGE === '1') {
+      expect(execFileSync('whoami.exe', ['/priv'], { encoding: 'utf8' })).not.toContain('SeSecurityPrivilege');
+    }
+    const directory = root(), file = join(directory, 'authorized_keys');
+    privatePath(directory, true); writeFileSync(file, '# existing\n'); privatePath(file);
+    const check = '$ErrorActionPreference="Stop";$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;' +
+      'foreach($path in @($env:NR_ACL_DIR,$env:NR_ACL_FILE)){$acl=if([IO.Directory]::Exists($path)){[IO.Directory]::GetAccessControl($path)}else{[IO.File]::GetAccessControl($path)};' +
+      'if(!$acl.AreAccessRulesProtected){throw "Inheritance enabled"};' +
+      '$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));' +
+      'if($rules.Count -ne 2){throw "Unexpected access rules"};' +
+      'foreach($rule in $rules){if($rule.IdentityReference.Value -notin @($sid,"S-1-5-18") -or $rule.AccessControlType -ne "Allow" -or $rule.FileSystemRights -ne "FullControl"){throw "Unexpected access"}};' +
+      'if(!$acl.GetOwner([Security.Principal.SecurityIdentifier])){throw "Missing owner"};' +
+      '$acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access -bor [Security.AccessControl.AccessControlSections]::Owner)}';
+    const inspect = () => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', check], {
+      env: windowsEnvironment({ ...process.env, NR_ACL_DIR: directory, NR_ACL_FILE: file }), windowsHide: true, encoding: 'utf8',
+    });
+    const originalAcl = inspect(), id = randomUUID(), key = ssh();
+    changeKey(file, id, key, true); expect(inspect()).toBe(originalAcl);
+    changeKey(file, id, key, false); expect(inspect()).toBe(originalAcl);
+    expect(readFileSync(file, 'utf8')).toBe('# existing\n');
+  }, 60000);
+  it.skipIf(process.platform !== 'win32')('executes the actual generated bootstrap directory setup without audit privilege', () => {
+    const text = connectionScript(bootstrap(), { platform: 'win32', arch: 'x64', version: '0.1.0', filename: 'nyaarink-client-0.1.0-win32-x64.zip', sha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64) });
+    const decoded = Buffer.from(text.split('-EncodedCommand ')[1]!.split('\r\n')[0]!, 'base64').toString('utf16le');
+    const directory = join(root(), 'bootstrap');
+    const prefix = decoded.split(' [Net.ServicePointManager]')[0]!.replace(/\$dir=Join-Path[^\n]+/, '$dir=$env:NR_BOOT_DIR');
+    const script = prefix + '\n$acl=[IO.Directory]::GetAccessControl($dir);if(!$acl.AreAccessRulesProtected){throw "Inheritance enabled"}\n} finally {}';
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      env: windowsEnvironment({ ...process.env, NR_BOOT_DIR: directory }), windowsHide: true,
+    });
+    expect(existsSync(directory)).toBe(true);
+  }, 30000);
+
   it('pins the running Linux service executable and detects a main PID change during inspection', () => {
     expect(() => requireLinuxRuntime('123', '/usr/sbin/sshd', '123\n')).not.toThrow();
     for (const [pid, path, current] of [['0', '/usr/sbin/sshd', '0'], ['123', '/tmp/sshd', '123'], ['123', '/usr/sbin/sshd (deleted)', '123'], ['123', '/usr/sbin/sshd', '124']]) expect(() => requireLinuxRuntime(pid!, path!, current!)).toThrow();
