@@ -14,13 +14,25 @@ export function run(command: string, args: string[], env?: NodeJS.ProcessEnv) {
 }
 export const windows = () => process.platform === 'win32';
 export function powershell(script: string, env?: NodeJS.ProcessEnv) { return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$ErrorActionPreference="Stop";' + script], windowsEnvironment(env)); }
-export function supportedSshVersion(text: string) {
-  const version = /OpenSSH(?:_for_Windows)?_(\d+)\.(\d+)/.exec(text);
-  return !!version && (Number(version[1]) > 8 || (Number(version[1]) === 8 && Number(version[2]) >= 9));
+export function sshVersion(text: string) {
+  return /OpenSSH(?:_for_Windows)?_\d+\.\d+(?:p\d+)?/.exec(text)?.[0];
 }
-export function requireSshVersion() {
+export function inspectSshVersion() {
   const result = spawnSync(sshdExecutable(), ['-?'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-  if (!supportedSshVersion((result.stdout ?? '') + (result.stderr ?? ''))) throw new Error('需要OpenSSH 8.9或更新版本；请由C端确认升级，未改动现有服务或授权');
+  const version = sshVersion((result.stdout ?? '') + (result.stderr ?? ''));
+  if (result.error || !version) throw new Error('无法识别本机OpenSSH服务版本；不自动替换或升级已有服务');
+  return version;
+}
+export function matchesWindowsService(command: string, executable: string) {
+  // Custom binaries and command-line configuration overrides need a separate
+  // audited adapter; never inspect a different daemon than the running service.
+  const path = command.trim().replace(/^"([^"\r\n]+)"$/, '$1');
+  return path.toLowerCase() === executable.toLowerCase();
+}
+export function inspectServiceIdentity() {
+  if (!windows()) return;
+  const command = powershell('$s=Get-CimInstance Win32_Service -Filter "Name=\'sshd\'"; if($s){$s.PathName}');
+  if (!matchesWindowsService(command, sshdExecutable())) throw new Error('SSH服务程序或启动参数不属于当前支持的系统组件；未修改服务，请由C端确认配置');
 }
 export function privilegedAccount() {
   if (!windows()) return process.getuid!() === 0;
@@ -38,7 +50,9 @@ export function serviceStatus(): 'missing' | 'stopped' | 'running' {
   try { run('systemctl', ['is-active', '--quiet', 'ssh']); return 'running'; } catch { return 'stopped'; }
 }
 export async function prepareSsh(confirm: Confirm) {
-  const status = serviceStatus(); if (status === 'running') return;
+  const status = serviceStatus();
+  if (status !== 'missing') { inspectServiceIdentity(); inspectSshVersion(); }
+  if (status === 'running') return;
   const text = status === 'missing'
     ? '将使用系统组件/apt安装 OpenSSH Server，启动并启用SSH系统服务；系统安装器可能创建入站规则，需检查防火墙变化。本项目只连接回环，不自动放行端口。安装服务的提权不授予管理员SSH权限。是否继续？'
     : 'SSH服务未运行，将启动并启用SSH系统服务，不覆盖原配置或修改防火墙。是否继续？';
@@ -59,12 +73,13 @@ export async function prepareSsh(confirm: Confirm) {
   if (serviceStatus() !== 'running') throw new Error('SSH服务仍不可用；未授权上线');
 }
 export async function localSsh(port: number, confirm: Confirm) {
-  requireSshVersion();
+  inspectServiceIdentity();
+  console.log(`SSH服务：${inspectSshVersion()}；版本识别不代表安全补丁或兼容验收通过`);
   const account = userInfo().username, home = homedir();
   if (!/^[\w.@ -]+$/.test(account)) throw new Error('Unsupported local account name');
   const args = ['-T', '-C', `user=${account},host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport=${port}`];
   let text: string;
-  try { text = run(sshdExecutable(), args); }
+  try { text = inspectConfig(args.slice(1), arguments_ => run(sshdExecutable(), arguments_)); }
   catch (error) {
     if (windows()) {
       if (!await confirm('需要通过Windows UAC以管理员权限只读检查sshd配置；SSH仍授权原账户，不返回主机私钥，不更改配置。是否继续？')) throw new Error('SSH配置检查提权未获确认；授权保留等待');
@@ -81,6 +96,7 @@ export async function localSsh(port: number, confirm: Confirm) {
   }
   const options = new Map(text.split(/\r?\n/).map(line => { const at = line.indexOf(' '); return [line.slice(0, at), line.slice(at + 1)] as const; }));
   if (options.get('pubkeyauthentication') !== 'yes' || options.get('authorizedkeyscommand') !== 'none') throw new Error('SSH public-key configuration unsupported; no global settings changed');
+  requireSshCapabilities(text, port);
   const paths = options.get('authorizedkeysfile')?.split(/\s+/) ?? [];
   const raw = paths[0]; if (!raw || raw === 'none') throw new Error('No authorized_keys path');
   const expanded = raw.replaceAll('__PROGRAMDATA__', process.env.ProgramData ?? 'C:\\ProgramData').replaceAll('%h', home).replaceAll('%u', account).replaceAll('%%', '%');
@@ -101,6 +117,21 @@ export async function localSsh(port: number, confirm: Confirm) {
   return { account, home, shell: windows() ? 'powershell' as const : 'posix' as const, platform: windows() ? 'win32' as const : 'linux' as const,
     host: '127.0.0.1' as const, port, hostKeys, authorizedKeys };
 }
+export function requireSshCapabilities(text: string, port: number) {
+  const lines = text.split(/\r?\n/);
+  const value = (name: string) => lines.find(line => line.startsWith(name + ' '))?.slice(name.length + 1);
+  const algorithms = value('pubkeyacceptedalgorithms') ?? value('pubkeyacceptedkeytypes');
+  if (!algorithms?.split(',').includes('ssh-ed25519') || value('permittty') !== 'yes' ||
+      !lines.some(line => /^subsystem sftp\s+\S/.test(line)) || !lines.includes(`port ${port}`)) {
+    throw new Error('SSH缺少Ed25519认证、PTY、SFTP或选定监听端口；未放宽限制或升级服务');
+  }
+}
+// -G parses Match configuration without testing host private keys. Older
+// daemons may not implement it; -T remains the safe, read-only fallback.
+export function inspectConfig(context: string[], execute: (args: string[]) => string) {
+  try { return execute(['-G', ...context]); }
+  catch { return execute(['-T', ...context]); }
+}
 export async function verifyLoopback(host: string, port: number, hostKeys: string[]) {
   if (!['127.0.0.1', '::1'].includes(host)) throw new Error('Non-loopback SSH target');
   return new Promise<void>((ok, fail) => {
@@ -112,36 +143,39 @@ export async function verifyLoopback(host: string, port: number, hostKeys: strin
   });
 }
 function xml(value: string) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;'); }
-export function loginDefinition(state: State, root: string) {
+export function loginDefinition(state: State, root: string, mode: 'access' | 'cleanup' = 'access') {
   const sessionId = state.bootstrap.sessionId, node = join(state.runtime, windows() ? 'node.exe' : 'node'), entry = join(state.runtime, 'client.cjs');
+  const command = mode === 'cleanup' ? 'cleanup' : 'resume', suffix = mode === 'cleanup' ? '-cleanup' : '';
   if (![node, entry, root].every(isAbsolute) || [node, entry, root].some(value => /[\r\n\0]/.test(value))) throw new Error('Unsafe login command');
   if (windows()) {
     const sid = run('whoami.exe', ['/user', '/fo', 'csv', '/nh']).match(/S-1-5-[0-9-]+/)?.[0]; if (!sid) throw new Error('Cannot determine user SID');
-    const args = `"${entry}" resume --session ${sessionId}`;
-    return { path: join(root, 'login-task.xml'), content: `<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(sid)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Target"><UserId>${xml(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings><Actions Context="Target"><Exec><Command>${xml(node)}</Command><Arguments>${xml(args)}</Arguments><WorkingDirectory>${xml(state.runtime)}</WorkingDirectory></Exec></Actions></Task>` };
+    const args = `"${entry}" ${command} --session ${sessionId}`;
+    return { path: join(root, `login-task${suffix}.xml`), content: `<?xml version="1.0" encoding="UTF-16"?><Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(sid)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Target"><UserId>${xml(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings><Actions Context="Target"><Exec><Command>${xml(node)}</Command><Arguments>${xml(args)}</Arguments><WorkingDirectory>${xml(state.runtime)}</WorkingDirectory></Exec></Actions></Task>` };
   }
   const quote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$') + '"';
-  return { path: join(homedir(), '.config', 'systemd', 'user', `nyaarink-${sessionId}.service`), content: `[Unit]\nDescription=NyaaRink authorized assistance ${sessionId}\nAfter=network.target\n[Service]\nType=simple\nExecStart=${quote(node)} ${quote(entry)} resume --session ${sessionId}\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nUMask=0077\n[Install]\nWantedBy=default.target\n` };
+  return { path: join(homedir(), '.config', 'systemd', 'user', `nyaarink-${sessionId}${suffix}.service`), content: `[Unit]\nDescription=NyaaRink ${command} ${sessionId}\nAfter=network.target\n[Service]\nType=simple\nExecStart=${quote(node)} ${quote(entry)} ${command} --session ${sessionId}\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nUMask=0077\n[Install]\nWantedBy=default.target\n` };
 }
-export function installLogin(state: State, root: string) {
+export function installLogin(state: State, root: string, mode: 'access' | 'cleanup' = 'access') {
   if (!windows()) run('systemctl', ['--user', 'show-environment']); // Never enable linger or fall back to cron.
-  const definition = loginDefinition(state, root); mkdirSync(dirname(definition.path), { recursive: true, mode: 0o700 });
+  const definition = loginDefinition(state, root, mode), suffix = mode === 'cleanup' ? '-cleanup' : ''; mkdirSync(dirname(definition.path), { recursive: true, mode: 0o700 });
   if (existsSync(definition.path)) {
     const previous = readFileSync(definition.path, windows() ? 'utf16le' : 'utf8').replace(/^\ufeff/, ''); if (previous !== definition.content) throw new Error('Conflicting login definition');
   } else durableWrite(definition.path, windows() ? Buffer.from('\ufeff' + definition.content, 'utf16le') : definition.content);
   privatePath(definition.path);
-  if (windows()) run('schtasks.exe', ['/Create', '/TN', `NyaaRink-${state.bootstrap.sessionId}`, '/XML', definition.path, '/F']);
-  else { run('systemctl', ['--user', 'daemon-reload']); run('systemctl', ['--user', 'enable', `nyaarink-${state.bootstrap.sessionId}.service`]); }
+  if (windows()) run('schtasks.exe', ['/Create', '/TN', `NyaaRink-${state.bootstrap.sessionId}${suffix}`, '/XML', definition.path, '/F']);
+  else { run('systemctl', ['--user', 'daemon-reload']); run('systemctl', ['--user', 'enable', `nyaarink-${state.bootstrap.sessionId}${suffix}.service`]); }
   return definition.path;
 }
-export function removeLogin(state: State) {
-  if (!state.loginFile) return;
-  const hadFile = existsSync(state.loginFile);
-  const name = `nyaarink-${state.bootstrap.sessionId}.service`;
+export function removeLogin(state: State, mode: 'access' | 'cleanup' = 'access') {
+  const file = mode === 'cleanup' ? state.cleanupLoginFile : state.loginFile, suffix = mode === 'cleanup' ? '-cleanup' : '';
+  if (!file) return;
+  const hadFile = existsSync(file);
+  const name = `nyaarink-${state.bootstrap.sessionId}${suffix}.service`;
   if (windows()) {
-    let present = false; try { run('schtasks.exe', ['/Query', '/TN', `NyaaRink-${state.bootstrap.sessionId}`]); present = true; } catch { /* Absent task is already removed. */ }
-    if (present) run('schtasks.exe', ['/Delete', '/TN', `NyaaRink-${state.bootstrap.sessionId}`, '/F']);
-  } else { try { run('systemctl', ['--user', 'disable', name]); } catch (error) { if (state.loginFile && existsSync(state.loginFile)) throw error; } }
-  if (state.loginFile) rmSync(state.loginFile, { force: true });
+    // COM returns null for absence; access/query errors must propagate rather
+    // than being mistaken for a task that was successfully removed.
+    powershell(`$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$f=$s.GetFolder('\\');$name='NyaaRink-${state.bootstrap.sessionId}${suffix}';$t=@($f.GetTasks(0)|Where-Object {$_.Name -eq $name});if($t.Count){$f.DeleteTask($name,0)}`);
+  } else { try { run('systemctl', ['--user', 'disable', name]); } catch (error) { if (existsSync(file)) throw error; } }
+  rmSync(file, { force: true });
   if (!windows() && hadFile) run('systemctl', ['--user', 'daemon-reload']);
 }

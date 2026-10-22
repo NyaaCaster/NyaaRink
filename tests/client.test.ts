@@ -12,7 +12,7 @@ import { DeviceApi } from '../apps/client/src/api.js';
 import { token } from '../apps/server/src/crypto.js';
 import { connectionScript } from '../apps/server/src/artifacts.js';
 import type { BootstrapData } from '../packages/contracts/device.js';
-import { supportedSshVersion } from '../apps/client/src/platform.js';
+import { sshVersion, matchesWindowsService, requireSshCapabilities, inspectConfig } from '../apps/client/src/platform.js';
 import { windowsInspectionScript } from '../apps/client/src/windows-inspection.js';
 import { windowsEnvironment } from '../apps/client/src/windows.js';
 
@@ -23,6 +23,16 @@ function bootstrap(): BootstrapData { return { v: 1, sessionId: randomUUID(), en
 function state(boot: BootstrapData): State { const pair = deviceKeys(); return { v: 1, bootstrap: boot, phase: 'ready', devicePrivateKey: pair.privateKey, devicePublicKey: pair.publicKey, runtime: root(), cleanup: 'pending', reported: false, releaseVersion: '0.1.0' }; }
 const ssh = () => utils.generateKeyPairSync('ed25519', {}).public;
 describe('C installation and irreversible cleanup', () => {
+  it('inspects Match configuration without testing host keys and falls back for older daemons', () => {
+    const context = ['-C', 'user=ordinary,addr=127.0.0.1'];
+    const modern = vi.fn(() => 'pubkeyauthentication yes');
+    expect(inspectConfig(context, modern)).toBe('pubkeyauthentication yes');
+    expect(modern.mock.calls).toEqual([['-G', ...context]].map(args => [args]));
+    const legacy = vi.fn((args: string[]) => { if (args[0] === '-G') throw new Error('unsupported'); return 'legacy'; });
+    expect(inspectConfig(context, legacy)).toBe('legacy');
+    expect(legacy.mock.calls).toEqual([[['-G', ...context]], [['-T', ...context]]]);
+    expect(() => inspectConfig(context, () => { throw new Error('denied'); })).toThrow('denied');
+  });
   it('limits UAC inspection to the fixed sshd command for the original account', () => {
     const script = windowsInspectionScript('ordinary.user', 22142);
     expect(script).toContain('-Verb RunAs'); expect(script).toContain('PipeSecurity');
@@ -51,11 +61,25 @@ describe('C installation and irreversible cleanup', () => {
     const response = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(transport, 'utf16le').toString('base64')], { env: windowsEnvironment(), windowsHide: true, encoding: 'utf8', timeout: 60000 });
     expect(typeof JSON.parse(response).ok).toBe('boolean');
   }, 90000);
-  it('enforces the approved OpenSSH minimum for both platforms', () => {
-    expect(supportedSshVersion('OpenSSH_for_Windows_8.6p1, LibreSSL')).toBe(false);
-    expect(supportedSshVersion('OpenSSH_8.9p1 Ubuntu')).toBe(true);
-    expect(supportedSshVersion('OpenSSH_for_Windows_9.8p1')).toBe(true);
-    expect(supportedSshVersion('unrecognized daemon')).toBe(false);
+  it('identifies OpenSSH without equating version numbers to compatibility or patch status', () => {
+    expect(sshVersion('OpenSSH_for_Windows_8.6p1, LibreSSL')).toBe('OpenSSH_for_Windows_8.6p1');
+    expect(sshVersion('OpenSSH_8.9p1 Ubuntu')).toBe('OpenSSH_8.9p1');
+    expect(sshVersion('unrecognized daemon')).toBeUndefined();
+  });
+  it('rejects a different service binary or custom configuration before changing the service', () => {
+    const path = 'C:\\Windows\\System32\\OpenSSH\\sshd.exe';
+    expect(matchesWindowsService('"' + path + '"', path)).toBe(true);
+    expect(matchesWindowsService(path.toUpperCase(), path)).toBe(true);
+    expect(matchesWindowsService(path + ' -f other.conf', path)).toBe(false);
+    expect(matchesWindowsService('C:\\other\\sshd.exe', path)).toBe(false);
+  });
+  it('requires actual configured capabilities and accepts the legacy algorithm option name', () => {
+    const text = 'port 22142\npermittty yes\nsubsystem sftp sftp-server.exe\npubkeyacceptedalgorithms ssh-ed25519,rsa-sha2-512';
+    expect(() => requireSshCapabilities(text, 22142)).not.toThrow();
+    expect(() => requireSshCapabilities(text.replace('pubkeyacceptedalgorithms', 'pubkeyacceptedkeytypes'), 22142)).not.toThrow();
+    for (const bad of [text.replace('ssh-ed25519,', ''), text.replace('permittty yes', 'permittty no'), text.replace('subsystem sftp', 'subsystem other'), text.replace('port 22142', 'port 22')]) {
+      expect(() => requireSshCapabilities(bad, 22142)).toThrow('SSH缺少');
+    }
   });
   it('preserves other SSH lines and removes exactly one session key', () => {
     const file = join(root(), 'authorized_keys'), original = '# original\n' + ssh() + '\n';
@@ -72,18 +96,20 @@ describe('C installation and irreversible cleanup', () => {
   });
   it('offline revoke preserves cleanup runner and cannot be overwritten by stale ready state', async () => {
     const boot = bootstrap(), store = new StateStore(boot.sessionId, root()), initial = state(boot); store.write(initial);
-    const removeLogin = vi.fn(), addKey = vi.fn();
+    const removeLogin = vi.fn(), addKey = vi.fn(), login = vi.fn(() => join(store.directory, 'cleanup'));
     const offline = vi.fn<typeof fetch>().mockRejectedValue(new Error('offline'));
-    const result = await localRevoke(store, { removeLogin, addKey }, offline);
-    expect(result.phase).toBe('revoked'); expect(result.cleanup).toBe('pending'); expect(removeLogin).not.toHaveBeenCalled();
+    const result = await localRevoke(store, { removeLogin, addKey, login }, offline);
+    expect(result.phase).toBe('revoked'); expect(result.cleanup).toBe('pending'); expect(removeLogin).toHaveBeenCalledWith(expect.anything(), 'access');
+    expect(login).toHaveBeenCalledWith(expect.anything(), store.directory, 'cleanup');
     expect(result.devicePrivateKey).toBeDefined(); expect(() => store.write(initial)).toThrow('permanent');
     expect(store.read().phase).toBe('revoked');
   }, 30000);
   it('signed cleanup removes login and destroys device proof only after acknowledgment', async () => {
     const boot = bootstrap(), store = new StateStore(boot.sessionId, root()); store.write(state(boot));
     const request = vi.fn<typeof fetch>().mockImplementation(async url => Response.json(String(url).endsWith('/challenge') ? { v: 1, nonce: token(), instanceId: boot.instanceId, epoch: boot.epoch } : { ok: true }));
-    const removeLogin = vi.fn(); const result = await localRevoke(store, { addKey: vi.fn(), removeLogin }, request);
-    expect(result.phase).toBe('cleaned'); expect(result.devicePrivateKey).toBeUndefined(); expect(removeLogin).toHaveBeenCalledOnce();
+    const removeLogin = vi.fn(); const result = await localRevoke(store, { addKey: vi.fn(), removeLogin, login: () => join(store.directory, 'cleanup') }, request);
+    expect(result.phase).toBe('cleaned'); expect(result.devicePrivateKey).toBeUndefined(); expect(removeLogin).toHaveBeenCalledTimes(2);
+    expect(removeLogin.mock.invocationCallOrder[1]).toBeLessThan(request.mock.invocationCallOrder[3]!);
     expect(request).toHaveBeenCalledTimes(4);
   }, 30000);
   it('a lost cleanup acknowledgment retains the login outbox and signed proof for retry', async () => {
@@ -92,11 +118,29 @@ describe('C installation and irreversible cleanup', () => {
       if (String(url).endsWith('/cleanup-ack')) throw new Error('response lost');
       return Response.json(String(url).endsWith('/challenge') ? { v: 1, nonce: token(), instanceId: boot.instanceId, epoch: boot.epoch } : { ok: true });
     });
-    const removeLogin = vi.fn();
-    const result = await localRevoke(store, { addKey: vi.fn(), removeLogin }, request);
+    const removeLogin = vi.fn(), login = vi.fn(() => join(store.directory, 'cleanup'));
+    const result = await localRevoke(store, { addKey: vi.fn(), removeLogin, login }, request);
     expect(result.phase).toBe('revoked'); expect(result.reported).toBe(true);
-    expect(result.devicePrivateKey).toBeDefined(); expect(removeLogin).not.toHaveBeenCalled();
+    expect(result.devicePrivateKey).toBeDefined(); expect(removeLogin).toHaveBeenCalledTimes(2); expect(login).toHaveBeenCalledTimes(2);
   }, 30000);
+  it.each(['access', 'cleanup', 'registration'] as const)('reports failed cleanup and preserves proof on %s failure, then retries', async failure => {
+    const boot = bootstrap(), store = new StateStore(boot.sessionId, root()); store.write(state(boot));
+    const receipts: string[] = [];
+    const request = vi.fn<typeof fetch>().mockImplementation(async (url, options) => {
+      if (String(url).endsWith('/cleanup-ack')) receipts.push(JSON.parse(String(options?.body)).result);
+      return Response.json(String(url).endsWith('/challenge') ? { v: 1, nonce: token(), instanceId: boot.instanceId, epoch: boot.epoch } : { ok: true });
+    });
+    let fail = true;
+    const hooks = { addKey: vi.fn(),
+      login: vi.fn(() => { if (fail && failure === 'registration') throw new Error('denied'); return join(store.directory, 'cleanup'); }),
+      removeLogin: vi.fn((_state: State, mode?: 'access' | 'cleanup') => { if (fail && mode === failure) throw new Error('denied'); }) };
+    const first = await localRevoke(store, hooks, request);
+    expect(first.cleanup).toBe('failed'); expect(first.phase).toBe('revoked'); expect(first.devicePrivateKey).toBeDefined();
+    expect(receipts).toEqual(['failed']);
+    fail = false;
+    const second = await localRevoke(store, hooks, request);
+    expect(second.phase).toBe('cleaned'); expect(second.devicePrivateKey).toBeUndefined(); expect(receipts).toEqual(['failed', 'confirmed']);
+  }, 60000);
   it('compensates failed login setup while preserving enrollment for retry', async () => {
     const boot = bootstrap(), directory = root(), store = new StateStore(boot.sessionId, directory), key = ssh();
     const addKey = vi.fn(), removeLogin = vi.fn();

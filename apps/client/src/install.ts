@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { z } from 'zod';
 import { Bootstrap, Enrollment, type BootstrapData } from '../../../packages/contracts/device.js';
 import { VERSION } from '@nyaarink/version';
@@ -71,7 +72,7 @@ export async function install(input: BootstrapData, store: StateStore, runtime: 
     return state;
   } finally { unlock(); }
 }
-export async function localRevoke(store: StateStore, hooks: Pick<InstallHooks, 'addKey' | 'removeLogin'>, request?: typeof fetch) {
+export async function localRevoke(store: StateStore, hooks: Pick<InstallHooks, 'addKey' | 'removeLogin' | 'login'>, request?: typeof fetch) {
   // The marker must win even if an installer currently owns the writer lock.
   store.markRevoked();
   const unlock = store.lock();
@@ -80,24 +81,34 @@ export async function localRevoke(store: StateStore, hooks: Pick<InstallHooks, '
   if (state.phase === 'cleaned') return state;
   state.phase = 'revoked'; state.cleanup = 'pending'; store.write(state);
   let failed = false;
+  const retry = () => {
+    // Persist the expected path first so a crash during registration remains
+    // compensatable. This task can only run cleanup, never resume access.
+    state.cleanupLoginFile = process.platform === 'win32' ? join(store.directory, 'login-task-cleanup.xml') : join(homedir(), '.config', 'systemd', 'user', `nyaarink-${state.bootstrap.sessionId}-cleanup.service`);
+    store.write(state);
+    state.cleanupLoginFile = hooks.login(state, store.directory, 'cleanup'); store.write(state);
+  };
+  try { retry(); } catch { failed = true; }
   try { if (state.authorizedKeys && state.sshPublicKey) hooks.addKey(state.authorizedKeys, state.bootstrap.sessionId, state.sshPublicKey, false); } catch { failed = true; }
-  // Keep the login runner until the signed offline revocation has been delivered.
-  // Its permanent revoked marker permits cleanup only, never reconnecting SSH.
+  try { hooks.removeLogin(state, 'access'); } catch { failed = true; }
   state.cleanup = failed ? 'failed' : 'pending'; store.write(state);
   const api = new DeviceApi(state, request);
   try {
     await api.perform('disconnect'); state.reported = true; store.write(state);
-    // Confirm removal of access material while the revoked-only retry runner
-    // still exists. A dropped acknowledgment must not strand the outbox.
-    await api.perform('cleanup-ack', { result: failed ? 'failed' : 'confirmed' });
     if (!failed) {
-      try { hooks.removeLogin(state); } catch { failed = true; }
+      try { hooks.removeLogin(state, 'cleanup'); } catch { failed = true; }
     }
+    await api.perform('cleanup-ack', { result: failed ? 'failed' : 'confirmed' });
     state.cleanup = failed ? 'failed' : 'confirmed'; store.write(state);
     if (!failed) {
       delete state.devicePrivateKey; delete state.sshPublicKey; state.bootstrap.bootstrapKey = '0'.repeat(43); state.phase = 'cleaned'; store.write(state);
     }
-  } catch { /* Offline revocation remains durable. Keep only the proof necessary for signed retry. */ }
+  } catch {
+    // There is no atomic transaction spanning the OS task store and S. If the
+    // final receipt is lost, restore the cleanup-only task and retain proof.
+    // A crash in this narrow interval requires the documented cleanup command.
+    try { retry(); } catch { state.cleanup = 'failed'; store.write(state); }
+  }
   return state;
   } finally { unlock(); }
 }

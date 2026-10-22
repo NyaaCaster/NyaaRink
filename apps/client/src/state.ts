@@ -11,7 +11,7 @@ import { windowsEnvironment } from './windows.js';
 export const LocalState = z.object({ v: z.literal(1), bootstrap: Bootstrap,
   devicePrivateKey: z.string().optional(), devicePublicKey: z.string(), enrollment: Enrollment.optional(),
   phase: z.enum(['preparing', 'enrolled', 'ready', 'revoked', 'cleaned']),
-  sshPublicKey: z.string().optional(), authorizedKeys: z.string().optional(), loginFile: z.string().optional(),
+  sshPublicKey: z.string().optional(), authorizedKeys: z.string().optional(), loginFile: z.string().optional(), cleanupLoginFile: z.string().optional(),
   runtime: z.string(), cleanup: z.enum(['pending', 'confirmed', 'failed']).default('pending'),
   reported: z.boolean().default(false), releaseVersion: z.string(),
 }).strict();
