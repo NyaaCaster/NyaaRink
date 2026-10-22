@@ -131,8 +131,8 @@ P9完成：修复发行ec164bf已提交推送并部署；双平台客户端重�
 
 P11完成：9文件82项、typecheck/lint/build、Python3项通过；双平台重新签名，实际Windows发行验签及确认逻辑检查通过。镜像f9ec694已发布部署，两端私密发行变量一致；DB/权威/主密钥备份、seq125校验、签名预检、nginx及真实CA/SNI HTTPS ready通过。生产实际下载Windows包摘要与新版确认逻辑、只读MCP通过；原有效授权保留。最新交接013，A17未测和完整用户重试/杀毒复核继续保留。
 
-## 14. P12 原生 C端与便携 OpenSSH（A20） 🟡
+## 14. P12 原生 C端与便携 OpenSSH（A20） ✅
 
 具体实施计划见《阶段计划-P12.md》，当前交接014。Windows Go原生与六组件独立便携SSH已实现，内层签名包6,171,361 bytes（约5.89 MiB），Linux包3,409,578 bytes。新包不携带Node；服务端、MCP/CLI及原会话保持既有运行方式。
 
-Windows真实便携认证、exec/PTY/SFTP、禁止转发、公钥移除、SSH命令进程树回收通过；与真实TS服务隔离HTTPS设备登记、WSS、断网重连、S主动撤销与C本地主动撤销通过。Linux授权文件mode/xattr保留、hardlink拒绝通过；完整原生Linux会话未测。最终全量回归和生产发布结果见验收记录。只有发行签名/摘要、TLS健康、生产版本及原授权保留核验完成后标记✅；A17限制不虚标。
+Windows真实便携认证、exec/PTY/SFTP、禁止转发、公钥移除、SSH命令进程树回收通过；与真实TS服务隔离HTTPS设备登记、WSS、断网重连、S主动撤销与C本地主动撤销通过。Linux授权文件mode/xattr保留、hardlink拒绝通过；完整原生Linux会话未测。最终全量回归和生产发布结果见验收记录。P12生产app/gateway均34dd0aa，DB/权威/主密钥备份、seq126校验、签名预检、nginx、真实CA/SNI TLS ready、双平台HTTPS发行摘要及只读MCP通过。权威账本与主密钥同切换前备份逐文件一致，原授权保留，未创建或撤销用户会话；A17限制不虚标。
