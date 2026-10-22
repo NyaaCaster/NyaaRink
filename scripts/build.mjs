@@ -5,4 +5,5 @@ for (const name of ['server', 'cli', 'client']) {
     bundle: true, platform: 'node', target: 'node24', format: 'esm', sourcemap: true,
     external: ['better-sqlite3', 'ssh2'], banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
 }
+await build({ entryPoints: ['apps/server/src/maintenance.ts'], outfile: 'dist/server/maintenance.js', bundle: true, platform: 'node', target: 'node24', format: 'esm', external: ['better-sqlite3', 'ssh2'], banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" } });
 await viteBuild({ configFile: 'apps/web/vite.config.ts' });

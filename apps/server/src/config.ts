@@ -1,5 +1,5 @@
 import { readFileSync, statSync, realpathSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import { z } from 'zod';
 
@@ -28,7 +28,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     if (!statSync(config[field]).isDirectory()) throw new Error('Required directory unavailable: ' + field);
   }
   const state = resolve(config.STATE_DIR), authority = resolve(config.AUTHORITY_DIR);
-  if (state === authority || state.startsWith(authority + '/') || authority.startsWith(state + '/') || state.startsWith(authority + '\\') || authority.startsWith(state + '\\')) throw new Error('State and authority must be independent directories');
+  const contains = (parent: string, child: string) => { const rel = relative(parent, child); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); };
+  if (contains(state, authority) || contains(authority, state)) throw new Error('State and authority must be independent directories');
   const certificate = new X509Certificate(readFileSync(join(config.TLS_CERT_DIR, 'fullchain.pem')));
   if (!certificate.checkHost(url.hostname) || Date.parse(certificate.validTo) <= Date.now() || Date.parse(certificate.validFrom) > Date.now()) throw new Error('TLS certificate does not match configured origin or validity');
   const masterKey = readFileSync(config.SESSION_MASTER_KEY_FILE);
