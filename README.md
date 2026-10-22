@@ -4,18 +4,18 @@
 
 Portable remote SSH control assistance service.
 
-设计审计、实施基线、SSOT与C端GUI已获批准；P1/P2完成，P3–P7实现及验收进行中；尚未通过完整上线闸门，未部署生产服务。
+V1 已按批准的 SSOT 完成 P1–P8，并部署至 macmini。按 A17 保留未测试的平台和交互场景，实测范围见验收记录。
 
 需求见 [.docs/初始设计.md](.docs/初始设计.md)，审计见 [.docs/设计审计.md](.docs/设计审计.md)。
 
-批准状态见 [.docs/设计决策.md](.docs/设计决策.md)，开发阶段与技术标准入口见 [.docs/开发计划-SSOT.md](.docs/开发计划-SSOT.md)，当前交接见 [.docs/阶段交接-008.md](.docs/阶段交接-008.md)。
+批准状态见 [.docs/设计决策.md](.docs/设计决策.md)，开发阶段与技术标准入口见 [.docs/开发计划-SSOT.md](.docs/开发计划-SSOT.md)，当前交接见 [.docs/阶段交接-010.md](.docs/阶段交接-010.md)。
 
 操作说明见 [.docs/使用指南.md](.docs/使用指南.md)，维护与恢复见 [.docs/运维手册.md](.docs/运维手册.md)，实测证据和待验项目见 [.docs/验收记录.md](.docs/验收记录.md)。
 
-规划采用一次性邀请网页、C端明确授权、本地连接程序、HTTPS/WSS 5116 和 API/MCP 接入。网络中断保留授权，只有主动断开才撤销。C用户登录后自动恢复；业务数据库恢复保留有效授权，权威数据不明时冻结访问。
+采用一次性邀请网页、C端明确授权、本地连接程序、HTTPS/WSS 5116 和 API/MCP 接入。网络中断保留授权，只有主动断开才撤销。C用户登录后自动恢复；业务数据库恢复保留有效授权，权威数据不明时冻结访问。
 
 采用 [AGPL-3.0](LICENSE) 许可证，保留远端已有 LICENSE 原文。
 
 Nyaa be with you.
 
-开发校验：`npm ci`、`npm run lint`、`npm run typecheck`、`npm test`、`npm run build`。当前健康接口只报告存活，正式ready保持503，避免将骨架误作为可用服务。
+开发校验：`npm ci`、`npm run lint`、`npm run typecheck`、`npm test`、`npm run build`。存活检查为 `/health/live`；`/health/ready` 仅在权威与生产子系统可用、正常接入时返回 200。浏览器测试可通过 `NYAARINK_TEST_CHROMIUM` 指定已安装的 Chrome。
