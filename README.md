@@ -8,7 +8,7 @@ V1 已按批准的 SSOT 完成 P1–P8，并部署至 macmini。按 A17 保留�
 
 需求见 [.docs/初始设计.md](.docs/初始设计.md)，审计见 [.docs/设计审计.md](.docs/设计审计.md)。
 
-批准状态见 [.docs/设计决策.md](.docs/设计决策.md)，开发阶段与技术标准入口见 [.docs/开发计划-SSOT.md](.docs/开发计划-SSOT.md)，当前交接见 [.docs/阶段交接-014.md](.docs/阶段交接-014.md)。
+批准状态见 [.docs/设计决策.md](.docs/设计决策.md)，开发阶段与技术标准入口见 [.docs/开发计划-SSOT.md](.docs/开发计划-SSOT.md)，当前交接见 [.docs/阶段交接-015.md](.docs/阶段交接-015.md)。
 
 操作说明见 [.docs/使用指南.md](.docs/使用指南.md)，维护与恢复见 [.docs/运维手册.md](.docs/运维手册.md)，实测证据和待验项目见 [.docs/验收记录.md](.docs/验收记录.md)。
 

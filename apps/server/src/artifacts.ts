@@ -87,7 +87,7 @@ export function windowsConnectionPackage(input: unknown, artifact: ClientArtifac
   if (artifact.platform !== 'win32' || archive.length > 150 * 1024 * 1024 || createHash('sha256').update(archive).digest('hex') !== artifact.sha256) throw new Error('Release artifact hash invalid');
   const readme = `NyaaRink - Windows 连接包 / Windows connection package
 
-1. 解压整个连接包到自己的本地目录，先阅读 start.bat，再双击运行。
+1. 解压后进入 NyaaRink-${boot.sessionId} 文件夹，先阅读 start.bat，再双击运行。
 2. start.bat 通过明文 PowerShell 在本地校验并展开随包 client-runtime.zip；不下载程序，不修改执行策略。随后运行发行验签与安装。
 3. ${artifact.runtime === 'go' ? '程序确认当前账户后运行随包便携 sshd，只监听随机回环端口，不安装或改动系统 SSH 服务，不新增防火墙规则。' : '程序检查系统 SSH，经本机确认按需准备服务；系统准备可能请求 UAC，连接仍使用原账户。'}请使用普通账户；高权限账户需额外明确确认。
 4. 协助者可能使用 AI Agent。安装后会在用户登录时自动恢复。退出程序、断网或关闭页面均不撤销授权。
@@ -100,7 +100,8 @@ NyaaRink 自有程序没有 Windows Authenticode 签名；发行使用独立 Ed2
 Nyaa be with you.
 `;
   // Store the already compressed release unchanged; no server-side extraction or secret files.
-  const data = zipSync({ 'start.bat': Buffer.from(windowsLauncher(artifact)), 'bootstrap.json': Buffer.from(JSON.stringify(boot)),
-    'client-runtime.zip': archive, 'README.txt': Buffer.from('\uFEFF' + readme) }, { level: 0 });
+  const folder = `NyaaRink-${boot.sessionId}/`;
+  const data = zipSync({ [folder + 'start.bat']: Buffer.from(windowsLauncher(artifact)), [folder + 'bootstrap.json']: Buffer.from(JSON.stringify(boot)),
+    [folder + 'client-runtime.zip']: archive, [folder + 'README.txt']: Buffer.from('\uFEFF' + readme) }, { level: 0 });
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }

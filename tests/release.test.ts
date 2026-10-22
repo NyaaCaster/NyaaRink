@@ -62,7 +62,10 @@ const winArtifact = (archive: Buffer, manifest: Buffer): ClientArtifact => ({ pl
 it('builds a transparent ZIP with separate session credentials and an unchanged runtime archive', () => {
   const archive = Buffer.from(zipSync({ 'fixture.txt': Buffer.from('signed runtime fixture') })), input = boot();
   const artifact = winArtifact(archive, Buffer.from('manifest'));
-  const entries = unzipSync(windowsConnectionPackage(input, artifact, archive));
+  const packed = unzipSync(windowsConnectionPackage(input, artifact, archive));
+  const prefix = `NyaaRink-${input.sessionId}/`;
+  expect(Object.keys(packed).every(name => name.startsWith(prefix) && name.split('/').length === 2)).toBe(true);
+  const entries = Object.fromEntries(Object.entries(packed).map(([name, data]) => [name.slice(prefix.length), data]));
   expect(Object.keys(entries).sort()).toEqual(['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat']);
   expect(JSON.parse(Buffer.from(entries['bootstrap.json']!).toString())).toEqual(input);
   expect(Buffer.from(entries['client-runtime.zip']!)).toEqual(archive);
@@ -92,15 +95,18 @@ it.skipIf(process.platform !== 'win32')('runs the BAT from a Chinese space path 
     const target = join(directory(), `中文 空格 & ${label}`);
     const entries = unzipSync(pack);
     mkdirSync(target);
-    for (const [name, bytes] of Object.entries(entries)) writeFileSync(join(target, name), bytes);
+    for (const [name, bytes] of Object.entries(entries)) { const path = join(target, name); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, bytes); }
+    const folders = readdirSync(target); expect(folders).toHaveLength(1);
+    const packageDirectory = join(target, folders[0]!);
     const marker = join(target, 'installed.txt');
-    const result = spawnSync('cmd.exe', ['/d', '/c', 'start.bat'], { cwd: target, input: '\r\n', windowsHide: true, timeout: 60000, env: windowsEnvironment({ ...process.env, NR_TEST_INSTALLED: marker }), encoding: 'utf8' });
+    const result = spawnSync('cmd.exe', ['/d', '/c', 'start.bat'], { cwd: packageDirectory, input: '\r\n', windowsHide: true, timeout: 60000, env: windowsEnvironment({ ...process.env, NR_TEST_INSTALLED: marker }), encoding: 'utf8' });
     expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(expected);
     expect(existsSync(marker)).toBe(expected === 0);
     if (expected === 0) expect(readFileSync(marker, 'utf8')).toContain('install --bootstrap');
   };
   run('正常', windowsConnectionPackage(boot(), artifact, archive), 0);
-  const brokenEntries = unzipSync(windowsConnectionPackage(boot(), artifact, archive)); brokenEntries['client-runtime.zip'] = Buffer.from('changed');
+  const brokenEntries = unzipSync(windowsConnectionPackage(boot(), artifact, archive));
+  const archiveEntry = Object.keys(brokenEntries).find(name => name.endsWith('/client-runtime.zip'))!; brokenEntries[archiveEntry] = Buffer.from('changed');
   run('包篡改', Buffer.from(zipSync(brokenEntries, { level: 0 })), 1);
   const badSignature = Buffer.from(signature); badSignature[0] = badSignature[0]! ^ 1;
   const badArchive = Buffer.from(zipSync({ ...runtime, 'manifest.sig': badSignature }, { level: 1 }));

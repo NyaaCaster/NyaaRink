@@ -50,7 +50,7 @@ try {
   const extra = join(runtime, 'extra.dll'); writeFileSync(extra, 'unexpected');
   assert.throws(verify, 'unlisted file must fail'); rmSync(extra); verify();
   const outer = windowsConnectionPackage(bootstrap, artifact, archive);
-  assert.deepEqual(Object.keys(unzipSync(outer)).sort(), ['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat']);
+  assert.deepEqual(Object.keys(unzipSync(outer)).sort(), ['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat'].map(name => `NyaaRink-${id}/${name}`));
   console.log(`Native Windows runtime ${archive.length} bytes; complete connection ZIP ${outer.length} bytes`);
   server.on('request', (req, res) => {
     if (req.url !== '/fixture') return;

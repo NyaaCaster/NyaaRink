@@ -8,7 +8,7 @@ V1推荐验收范围：Windows11/Windows Server2022及更新的受支持版本x6
 
 新会话交付 Go 原生单程序，无需 Node/npm/.NET；Linux使用系统 SSH，Windows附微软官方便携 SSH 六组件。S端仍为TS/Node；旧Node会话保留各自运行时，不自动迁移。操作系统目标范围不扩张，实际通过范围见验收记录。
 
-Windows ZIP 含可读 start.bat、独立 bootstrap.json、原始签名 client-runtime.zip 和 README.txt；Linux保持.sh。BAT以明文PowerShell在当前用户私密临时目录校验包、清单及可执行文件SHA256，随后由原生程序核验Ed25519清单及所有文件；不新增PS1、不下载程序、不改执行策略。程序移入原用户私密持久目录，按清单摘要分版，不依赖下载目录恢复。
+Windows ZIP 所有文件统一放在唯一的 `NyaaRink-会话ID/` 目录内，避免直接解压散落；含可读 start.bat、独立 bootstrap.json、原始签名 client-runtime.zip 和 README.txt；Linux保持.sh。BAT以明文PowerShell在当前用户私密临时目录校验包、清单及可执行文件SHA256，随后由原生程序核验Ed25519清单及所有文件；不新增PS1、不下载程序、不改执行策略。程序移入原用户私密持久目录，按清单摘要分版，不依赖下载目录恢复。
 
 固定工具链与组件见技术依据、packages/windows-openssh.json及go.mod。微软ZIP固定10.4.0.0p1-Preview（非生产就绪），构建核对ZIP SHA256和逐文件微软签名发布者，运行前核对Authenticode信任。六组件原始字节不变，附完整LICENSE/NOTICE及Go/依赖许可；不压壳。发行v2清单含runtime/goVersion、平台、版本和全部文件摘要，离线Ed25519签名，拒绝额外文件、符号链接和异常尺寸。私钥仅保存在私密构建目录，公钥为公开代码常量；真实会话公钥不入Git。Node旧发行仍用原v1标准。
 

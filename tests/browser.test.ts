@@ -68,7 +68,10 @@ it('runs the real invitation UI, themes, script download, C revocation and inval
   const downloaded = page.waitForEvent('download'); await page.getByRole('button', { name: '下载连接脚本', exact: true }).click();
   const reply = await response; expect(reply.headers()['content-type']).toContain('application/zip'); expect(reply.headers()['cache-control']).toBe('no-store');
   const download = await downloaded; expect(download.suggestedFilename()).toMatch(/^NyaaRink-.*\.zip$/);
-  const entries = unzipSync(readFileSync((await download.path())!));
+  const packed = unzipSync(readFileSync((await download.path())!));
+  const prefix = `NyaaRink-${[...service.sessions.keys()][0]}/`;
+  expect(Object.keys(packed).every(name => name.startsWith(prefix) && name.split('/').length === 2)).toBe(true);
+  const entries = Object.fromEntries(Object.entries(packed).map(([name, data]) => [name.slice(prefix.length), data]));
   expect(Object.keys(entries).sort()).toEqual(['README.txt', 'bootstrap.json', 'client-runtime.zip', 'start.bat']);
   expect(JSON.parse(Buffer.from(entries['bootstrap.json']!).toString()).sessionId).toBe([...service.sessions.keys()][0]);
   expect(Buffer.from(entries['start.bat']!).toString()).not.toMatch(/EncodedCommand|Invoke-WebRequest/);

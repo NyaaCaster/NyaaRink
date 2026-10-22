@@ -79,7 +79,7 @@ function App() {
       const response = await fetch('/api/v1/browser/connection-script', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NR-CSRF': csrf.current, 'Idempotency-Key': downloading.current }, body: JSON.stringify({ platform }), credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(180000) });
       if (!response.ok) throw new ApiError(response.status);
       const url = URL.createObjectURL(await response.blob()), a = document.createElement('a'); a.href = url; a.download = `NyaaRink-${session!.id}.${platform === 'win32' ? 'zip' : 'sh'}`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); downloading.current = undefined;
-      setMessage(platform === 'win32' ? '已下载。解压后运行 start.bat · 含微软 OpenSSH Preview 便携组件，按提示确认。连接包含本次凭据，请勿转发。' : '已下载。请在本机运行，按提示确认。脚本含本次凭据，请勿转发。');
+      setMessage(platform === 'win32' ? '已下载。解压后进入包内文件夹运行 start.bat · 含微软 OpenSSH Preview 便携组件，按提示确认。连接包含本次凭据，请勿转发。' : '已下载。请在本机运行，按提示确认。脚本含本次凭据，请勿转发。');
     } catch { setMessage('下载未完成，请重试。如已在本机运行，请等待连接状态更新。'); }
     finally { setBusy(false); }
   }
