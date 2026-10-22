@@ -5,12 +5,14 @@ import { DomainError } from '@nyaarink/contracts';
 import { RinkService } from './service.js';
 import { equal, hash, mac, token } from './crypto.js';
 import type { Config } from './config.js';
+import { Artifacts, connectionScript } from './artifacts.js';
+import { join } from 'node:path';
 
 export type RouteConfig = Pick<Config, 'PUBLIC_BASE_URL' | 'MCP_API_KEY' | 'MCP_API_KEY_PREVIOUS' | 'API_KEY_PREVIOUS_UNTIL' | 'masterKey'>;
 const Id = z.string().uuid();
 const Credential = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const Signed = z.object({ sessionId: Id, nonce: Credential, signature: z.string().min(64).max(256) });
-export function routes(service: RinkService, config: RouteConfig) {
+export function routes(service: RinkService, config: RouteConfig, artifacts?: Artifacts) {
   const router = Router(), buckets = new Map<string, { count: number; until: number }>();
   const origin = new URL(config.PUBLIC_BASE_URL).origin;
   const cookieKey = Buffer.from(mac(config.masterKey, 'browser-cookie-v1'), 'hex');
@@ -37,6 +39,11 @@ export function routes(service: RinkService, config: RouteConfig) {
     next();
   });
   router.use(limit('all', 1000));
+  if (artifacts) router.get('/downloads/:filename', (req, res) => {
+    const item = artifacts.items.find(item => item.filename === req.params.filename);
+    if (!item) throw new DomainError('NOT_FOUND', 404);
+    res.sendFile(join(artifacts.directory, item.filename));
+  });
   const manage = (req: Request, _res: Response, next: NextFunction) => {
     const header = req.get('authorization') ?? '', key = header.startsWith('Bearer ') ? header.slice(7) : '';
     const current = equal(hash(key), hash(config.MCP_API_KEY));
@@ -65,6 +72,12 @@ export function routes(service: RinkService, config: RouteConfig) {
   });
   router.get('/api/v1/browser/session', (req, res) => { const value = browser(req, res); res.json({ ...service.browserSession(hash(value)), csrf: csrf(value) }); });
   router.post('/api/v1/browser/bootstrap', browserWrite, async (req, res) => { res.json(await service.bootstrap(res.locals.browserHash, requestKey(req))); });
+  router.post('/api/v1/browser/connection-script', browserWrite, async (req, res) => {
+    if (!artifacts) throw new DomainError('OFFLINE', 503);
+    const { platform } = z.object({ platform: z.enum(['win32', 'linux']) }).strict().parse(req.body);
+    const boot = await service.bootstrap(res.locals.browserHash, requestKey(req));
+    res.attachment(`NyaaRink-${boot.sessionId}.${platform === 'win32' ? 'bat' : 'sh'}`).type('text/plain').send(connectionScript(boot, artifacts.get(platform)));
+  });
   router.post('/api/v1/browser/disconnect', browserWrite, async (req, res) => {
     const { sessionId } = z.object({ sessionId: Id }).strict().parse(req.body);
     res.json(await service.disconnect(sessionId, 'c_browser', res.locals.browserHash));

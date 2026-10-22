@@ -3,7 +3,8 @@ import { VERSION } from '@nyaarink/version';
 import { randomUUID } from 'node:crypto';
 import { routes, errorHandler, type RouteConfig } from './routes.js';
 import type { RinkService } from './service.js';
-export function createApp(service?: RinkService, config?: RouteConfig) {
+import type { Artifacts } from './artifacts.js';
+export function createApp(service?: RinkService, config?: RouteConfig, artifacts?: Artifacts) {
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => { res.locals.requestId = randomUUID(); res.setHeader('X-Request-Id', res.locals.requestId); res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
@@ -12,7 +13,7 @@ export function createApp(service?: RinkService, config?: RouteConfig) {
   // Until the authority and transport exist, this skeleton must never advertise readiness.
   app.get('/health/ready', (_req, res) => { res.status(503).json({ status: 'not_implemented', version: VERSION }); });
   app.get('/healthz', (_req, res) => { res.status(503).json({ status: service?.authority.frozen ? 'frozen' : 'not_implemented', version: VERSION }); });
-  if (service && config) app.use(routes(service, config));
+  if (service && config) app.use(routes(service, config, artifacts));
   app.use((_req, res) => { res.status(404).json({ error: { code: 'NOT_FOUND' } }); });
   app.use(errorHandler);
   return app;

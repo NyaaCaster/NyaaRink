@@ -50,6 +50,8 @@
 
 ## 3. 执行、终端与文件
 
+P3连接脚本分发接口：`POST /api/v1/browser/connection-script` 使用已接受浏览器Cookie、Origin、CSRF及幂等Key，严格请求体为`{"platform":"win32"}`或`{"platform":"linux"}`。返回本会话bat/sh附件，包含短时引导凭据，响应禁止缓存；复用bootstrap的替换/重试规则，不额外消费邀请。`GET /downloads/{filename}`只提供已验签发行目录中列举的公开程序包，不包含会话凭据，不允许任意路径下载。产品GUI接入在P6完成。
+
 exec输入sessionId、command、shell枚举、可选cwd、timeoutSeconds；默认60秒、最大3600秒。命令是**有意在C账户执行的代码**，不能假称做通用命令白名单沙箱。POSIX使用登记的shell，Windows显式PowerShell或cmd，不能猜测语法；cwd和路径不得拼接进未转义命令。超时终止跟踪到的任务/SSH通道，不撤权，不保证杀掉自行脱离会话的后台进程。
 
 exec在REST与MCP均快速返回executionId，再轮询/CLI等待。HTTP重试不重复执行同一幂等任务；控制连接丢失时标interrupted、结果可能未知，**绝不自动重放**。输出总计最多1MiB，超出继续排空并标truncated，最多内存保存10分钟；S进程重启不恢复输出和执行，不影响授权恢复。

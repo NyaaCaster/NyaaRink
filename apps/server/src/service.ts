@@ -8,13 +8,8 @@ import { Projection } from './projection.js';
 import { deviceMessage, deviceVerify, equal, hash, token } from './crypto.js';
 
 const Id = z.string().uuid(), Digest = z.string().regex(/^[a-f0-9]{64}$/), Time = z.iso.datetime();
-export const Enrollment = z.object({ sessionId: Id, enrollmentId: Id, devicePublicKey: z.string().max(1024),
-  account: z.string().min(1).max(128).regex(/^[^\x00-\x1f\x7f]+$/), home: z.string().min(1).max(4096),
-  shell: z.enum(['posix', 'powershell', 'cmd']), platform: z.enum(['linux', 'win32']),
-  host: z.enum(['127.0.0.1', '::1']), port: z.number().int().min(1).max(65535),
-  hostKeys: z.array(z.string().min(32).max(4096).regex(/^[A-Za-z0-9+/]+={0,2}$/)).min(1).max(8),
-}).strict();
-export type EnrollmentData = z.infer<typeof Enrollment>;
+export { Enrollment, type EnrollmentData } from '../../../packages/contracts/device.js';
+import { Enrollment, type EnrollmentData } from '../../../packages/contracts/device.js';
 const Invite = InvitationInput.extend({ id: Id, codeHash: Digest, expiresAt: Time, requestKey: Digest, inputHash: Digest });
 type Invitation = z.infer<typeof Invite> & { state: 'issued' | 'consumed' | 'cancelled'; sessionId?: string };
 type Session = { id: string; inviteId: string; browserHash: string; acceptedAt: string; authorization: 'accepted' | 'enrolled' | 'revoked';

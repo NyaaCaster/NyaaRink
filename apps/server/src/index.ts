@@ -3,6 +3,7 @@ import { loadConfig } from './config.js';
 import { BLESSING, VERSION } from '@nyaarink/version';
 import { Authority } from './authority.js';
 import { RinkService } from './service.js';
+import { Artifacts } from './artifacts.js';
 try {
   const config = loadConfig(process.env);
   if (process.argv.includes('--initialize-authority')) {
@@ -13,7 +14,8 @@ try {
     let service: RinkService | undefined;
     try { if (!authority.frozen) service = await RinkService.open(authority, config.STATE_DIR, config.PUBLIC_BASE_URL); }
     catch { authority.freeze('SERVICE_INITIALIZATION_FAILED'); }
-    const server = createApp(service, config).listen(config.PORT, '0.0.0.0', () => console.log(`NyaaRink ${VERSION} | ${BLESSING}${authority.frozen ? ' | frozen' : ''}`));
+    const artifacts = new Artifacts(config.CLIENT_ARTIFACT_DIR);
+    const server = createApp(service, config, artifacts).listen(config.PORT, '0.0.0.0', () => console.log(`NyaaRink ${VERSION} | ${BLESSING}${authority.frozen ? ' | frozen' : ''}`));
     for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => {
       server.close(() => { if (service) void service.close(); else authority.close(); });
     });
