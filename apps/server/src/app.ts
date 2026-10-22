@@ -22,7 +22,7 @@ export function createApp(service?: RinkService, config?: RouteConfig, artifacts
   app.get('/healthz', (_req, res) => { res.status(503).json({ status: service?.authority.frozen ? 'frozen' : 'not_implemented', version: VERSION }); });
   if (service && config) app.use(routes(service, config, artifacts, native, operations, files, shells));
   const web = resolve('dist/web');
-  app.use('/assets', express.static(resolve(web, 'assets'), { fallthrough: false, dotfiles: 'deny' }));
+  app.use('/assets', express.static(resolve(web, 'assets'), { dotfiles: 'ignore' }));
   app.get(/^\/(?:[A-Za-z0-9_-]{43})?$/, (_req, res) => { res.sendFile(resolve(web, 'index.html')); });
   app.use((_req, res) => { res.status(404).json({ error: { code: 'NOT_FOUND' } }); });
   app.use(errorHandler);

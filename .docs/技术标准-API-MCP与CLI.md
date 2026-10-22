@@ -79,12 +79,12 @@ SFTP默认路径限制为C确认的账户home及其子路径，每文件上限10
 
 每个可能建立SSH的工具description都说明：断网/exit不撤权；任务完成后显式调用rink_disconnect并检查结果；默认普通账户，提升须C明确授权。断开前Agent须考虑仍在运行的操作，不悄悄结束其他会话。
 
-## 5. CLI与四客户端兼容
+## 5. CLI与MCP客户端兼容
 
 统一CLI名`nyaarink`：`invite create/cancel`、`session list/status/metrics/disconnect`、`exec`、`execution status/cancel`、`shell`、`upload/download`、`ssh-config`、`mcp stdio`。`session disconnect --session <id>`为主动撤销命令；S端CLI在明确指定对象时可由已授权Agent直接调用，说明不能用Ctrl+C/SSH exit代替。
 
 CLI HTTPS/WSS到S，基址与管理Key分别读取`PUBLIC_BASE_URL`与`MCP_API_KEY`环境变量，不把Key写到配置示例。`mcp stdio`桥把本地stdio翻译成经鉴权的S调用，stdout仅MCP消息、日志stderr；桥进程停止不撤权。不能将本地文件路径当成S或C路径，上传CLI明确读取协助者本机文件。
 
-Codex、Claude Code、OpenCode、zcode分别建立验收行：准确版本、stdio桥实测、可用时StreamableHTTP+Bearer实测、工具发现、未鉴权拒绝、创建邀请、执行/轮询、显式断开。V1要求四者至少一个通用路径实测通过；若某工具名称、可安装渠道或版本不明确，先确认，不能虚构通过。未实测前都标未验证，不因用户曾安装某工具就标通过。
+按设计决策A16，V1实际客户端准入以ZCode本次HTTP/stdio工具发现和管理Key鉴权实测为准，已通过；错误/缺失Key均有S端HTTP401证据。其他三个客户端不再作为上线前置，未实测者不得声称通过。ZCode内创建邀请、执行/轮询、显式断开的完整工具调用流程未实测；共享业务层与REST/MCP/CLI功能、安全验证要求继续有效。准确版本、测试隔离与证据边界见《验收记录.md》。
 
 实现指标说明：`sshConnectionsOpened`为服务管理的已认证SSH连接计数；原生OpenSSH直接经私有socket使用者不纳入此认证计数，其隧道字节仍计入流量。`apiOperations`计受理的exec、终端和文件操作；原始SSH协议发包数无法可靠等同于访问请求数。页面明确展示受控连接与字节，RTT为控制WSS心跳往返毫秒。

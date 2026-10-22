@@ -1,12 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { utils } from 'ssh2';
+import ssh2 from 'ssh2';
 import { z } from 'zod';
 import { DEFAULTS, DomainError, InvitationInput } from '@nyaarink/contracts';
 import { Authority, type AuthorityEvent } from './authority.js';
 import { Projection } from './projection.js';
 import { deviceMessage, deviceVerify, equal, hash, token } from './crypto.js';
 import { ExecutionRecord, ExecutionResult } from '../../../packages/contracts/operations.js';
+const { utils } = ssh2;
 
 const Id = z.string().uuid(), Digest = z.string().regex(/^[a-f0-9]{64}$/), Time = z.iso.datetime();
 const Metrics = z.object({ sshBytesSToC: z.number().nonnegative(), sshBytesCToS: z.number().nonnegative(), sshConnectionsOpened: z.number().int().nonnegative(), onlineSeconds: z.number().nonnegative(), apiOperations: z.number().int().nonnegative() }).strict();

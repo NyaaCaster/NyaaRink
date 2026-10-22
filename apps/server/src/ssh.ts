@@ -1,9 +1,10 @@
 import type { Duplex } from 'node:stream';
-import { Client } from 'ssh2';
+import ssh2 from 'ssh2';
+import type { Client } from 'ssh2';
 import type { RinkService } from './service.js';
 
 export async function authenticated(service: RinkService, id: string, socket: Duplex) {
-  const credentials = service.credentials(id), client = new Client();
+  const credentials = service.credentials(id), client = new ssh2.Client();
   return new Promise<Client>((ok, fail) => {
     const failure = (error: Error) => { client.destroy(); socket.destroy(); fail(error); };
     client.on('error', failure);

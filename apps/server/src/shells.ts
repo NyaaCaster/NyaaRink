@@ -48,20 +48,44 @@ export class Shells {
   private async run(ws: WebSocket, ticket: Ticket) {
     const active: Active = { sessionId: ticket.sessionId, ws }; this.active.add(active);
     ws.on('error', () => {});
-    let pending = 0, closed = false;
+    let pending = 0, closed = false, lastPong = Date.now(), lastPing = Date.now();
+    ws.on('pong', () => { lastPong = Date.now(); });
     const poll = setInterval(() => {
-      if (ws.bufferedAmount > 1024 * 1024) ws.terminate();
-      else if (ws.bufferedAmount < 65536) { active.channel?.resume(); active.channel?.stderr.resume(); }
+      const now = Date.now();
+      if (now - lastPong > 45000 || ws.bufferedAmount > 1024 * 1024) { ws.terminate(); return; }
+      if (now - lastPing >= 15000 && ws.readyState === WebSocket.OPEN) { lastPing = now; ws.ping(); }
+      if (ws.bufferedAmount < 65536) { active.channel?.resume(); active.channel?.stderr.resume(); }
     }, 50);
     const close = () => { if (closed) return; closed = true; clearInterval(poll); active.channel?.destroy(); active.client?.destroy(); this.active.delete(active); ws.close(); };
     ws.once('close', close);
+    // Install before SSH authentication: early input must never be silently
+    // discarded while the asynchronous SSH channel is still being created.
+    ws.on('message', (bytes, binary) => {
+      try {
+        if (closed) return;
+        if (binary) {
+          const channel = active.channel;
+          if (!channel) throw new Error('Terminal not ready');
+          const data = Buffer.isBuffer(bytes) ? bytes : Array.isArray(bytes) ? Buffer.concat(bytes) : Buffer.from(bytes);
+          pending += data.length; if (pending > 1024 * 1024) throw new Error('Input limit');
+          const writable = channel.write(data, () => { pending -= data.length; });
+          if (!writable) ws.pause();
+        } else {
+          const input = z.discriminatedUnion('type', [TerminalSize.extend({ type: z.literal('resize') }).strict(), z.object({ type: z.literal('close') }).strict()]).parse(JSON.parse(bytes.toString()));
+          if (input.type === 'close') close();
+          else { if (!active.channel) throw new Error('Terminal not ready'); active.channel.setWindow(input.rows, input.cols, 0, 0); }
+        }
+      } catch { ws.close(1008, 'Terminal input rejected'); close(); }
+    });
     try {
       const client = await this.hub.connect(ticket.sessionId); active.client = client;
       if (closed) { client.destroy(); return; }
       client.once('close', close); this.hub.operation(ticket.sessionId);
-      const channel = await new Promise<ClientChannel>((ok, fail) => client.shell({ term: 'xterm-256color', cols: ticket.cols, rows: ticket.rows }, (error, stream) => error ? fail(error) : ok(stream)));
+      const channel = await new Promise<ClientChannel>((ok, fail) => client.shell({ term: 'xterm-256color', cols: ticket.cols, rows: ticket.rows }, (error, stream) => {
+        if (error) { fail(error); return; }
+        stream.on('error', close); ok(stream);
+      }));
       if (closed) { channel.destroy(); return; } active.channel = channel;
-      channel.on('error', close);
       const output = (bytes: Buffer) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         ws.send(bytes, { binary: true }, error => { if (error) close(); });
@@ -69,19 +93,6 @@ export class Shells {
       };
       channel.on('data', output); channel.stderr.on('data', output);
       channel.once('close', (code?: number) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'exit', code: code ?? null })); close(); });
-      ws.on('message', (bytes, binary) => {
-        try {
-          if (binary) {
-            const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes as ArrayBuffer);
-            pending += data.length; if (pending > 1024 * 1024) throw new Error('Input limit');
-            const writable = channel.write(data, () => { pending -= data.length; });
-            if (!writable) ws.pause();
-          } else {
-            const input = z.discriminatedUnion('type', [TerminalSize.extend({ type: z.literal('resize') }).strict(), z.object({ type: z.literal('close') }).strict()]).parse(JSON.parse(bytes.toString()));
-            if (input.type === 'close') close(); else channel.setWindow(input.rows, input.cols, 0, 0);
-          }
-        } catch { ws.close(1008, 'Terminal input rejected'); close(); }
-      });
       channel.on('drain', () => ws.resume());
       ws.send(JSON.stringify({ type: 'ready' }));
     } catch { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'error', code: 'OFFLINE' })); close(); }

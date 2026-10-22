@@ -44,5 +44,9 @@ it('health live works while unfinished skeleton refuses readiness and does not l
     expect(ready.status).toBe(503);
     expect(await ready.text()).not.toContain(env.MCP_API_KEY);
     expect((await fetch(url + '/unknown')).status).toBe(404);
+    const missing = await fetch(url + '/assets/does-not-exist.js');
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: { code: 'NOT_FOUND' } });
+    expect((await fetch(url + '/assets/.hidden')).status).toBe(404);
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
 });

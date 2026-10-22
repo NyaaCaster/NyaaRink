@@ -18,3 +18,5 @@
 开发工作流技能使用工作空间共享入口 `H:\GitHub\.claude\skills\`，不在本项目存放开发技能。读取适用技能后执行，不把尚不存在的脚本当成已实现能力。
 
 功能完成后，如需帮助使用者的 AI Agent 调用 NyaaRink 工具和命令，再在项目 `.agents/skills/` 与 AGENTS.md 中提供通用的产品使用说明。
+
+产品使用入口：通过MCP或CLI操作受邀机时，读取 [.agents/skills/nyaarink-assist/SKILL.md](.agents/skills/nyaarink-assist/SKILL.md) 与 [.docs/使用指南.md](.docs/使用指南.md)。当前兼容验收状态见 `.docs/验收记录.md`；产品使用技能不代表已通过上线验收。

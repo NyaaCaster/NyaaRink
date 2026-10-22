@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { Server, utils, type Connection } from 'ssh2';
-import WebSocket from 'ws';
+import WebSocket, { WebSocketServer, createWebSocketStream } from 'ws';
 import { Authority } from '../apps/server/src/authority.js';
 import { RinkService } from '../apps/server/src/service.js';
 import { TunnelHub } from '../apps/server/src/tunnel.js';
@@ -13,8 +13,8 @@ import { deviceMessage, deviceSign, hash, token } from '../apps/server/src/crypt
 import { deviceKeys, StateStore, type State } from '../apps/client/src/state.js';
 import { runTunnel, type Connector } from '../apps/client/src/tunnel.js';
 import { ControlMessage, message } from '../packages/contracts/tunnel.js';
-import { Bandwidth, QueueBudget, meter } from '../packages/contracts/transport.js';
-import { Readable } from 'node:stream';
+import { Bandwidth, QueueBudget, meter, bridge, CHUNK, QUEUE_LIMIT } from '../packages/contracts/transport.js';
+import { Readable, Duplex } from 'node:stream';
 import { sshFiles } from '../apps/server/src/proxy.js';
 import { Operations, executionCommand } from '../apps/server/src/operations.js';
 import { ExecInput } from '../packages/contracts/operations.js';
@@ -26,7 +26,7 @@ async function until(check: () => boolean, ms = 7000) { const end = Date.now() +
 async function setup(options: { revoked?: boolean; wrongHost?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'nyaarink-tunnel-')); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const key = randomBytes(32), directory = join(root, 'authority'); Authority.initialize(directory, key);
-  const service = await RinkService.open(new Authority(directory, key), join(root, 'db'), 'https://example.invalid:5116'); cleanups.push(() => service.close());
+  let service = await RinkService.open(new Authority(directory, key), join(root, 'db'), 'https://example.invalid:5116'); cleanups.push(() => service.close());
   const host = utils.generateKeyPairSync('ed25519'), pair = deviceKeys(), clients = new Set<Connection>();
   const ssh = new Server({ hostKeys: [host.private] }, client => {
     clients.add(client); client.on('error', () => {}); client.once('close', () => clients.delete(client));
@@ -59,7 +59,7 @@ async function setup(options: { revoked?: boolean; wrongHost?: boolean } = {}) {
   const store = new StateStore(sessionId, join(root, 'client'));
   const state: State = { v: 1, bootstrap, devicePublicKey: pair.publicKey, devicePrivateKey: pair.privateKey, phase: 'ready', runtime: root, cleanup: 'pending', reported: false, releaseVersion: '0.1.0', enrollment };
   store.write(state);
-  const server: HttpServer = createServer(); const hub = new TunnelHub(service); hub.attach(server);
+  const server: HttpServer = createServer(); let hub = new TunnelHub(service); hub.attach(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanups.push(async () => { await hub.close(); await new Promise<void>(resolve => server.close(() => resolve())); });
   const address = server.address() as { port: number };
@@ -73,9 +73,138 @@ async function setup(options: { revoked?: boolean; wrongHost?: boolean } = {}) {
   const controller = new AbortController(); let revoked = false;
   const running = runTunnel(store, async () => { revoked = true; }, controller.signal, connector);
   cleanups.push(async () => { controller.abort(); for (const socket of sockets) socket.terminate(); await running; });
-  return { service, hub, server, address, store, sessionId, connector, sockets, tickets, running, controller, isRevoked: () => revoked };
+  const restart = async () => {
+    await hub.close(); await service.close();
+    service = await RinkService.open(new Authority(directory, key), join(root, 'db'), 'https://example.invalid:5116');
+    hub = new TunnelHub(service); hub.attach(server);
+  };
+  return { get service() { return service; }, get hub() { return hub; }, server, address, store, root, sessionId, connector, sockets, tickets, running, controller, restart, isRevoked: () => revoked };
 }
 describe('outbound tunnel security and transport', () => {
+  it('backpressures a real paused WebSocket consumer and resumes without losing bytes', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0, perMessageDeflate: false });
+    cleanups.push(() => new Promise<void>(ok => server.close(() => ok())));
+    await new Promise<void>(ok => server.once('listening', ok));
+    const accepted = new Promise<WebSocket>(ok => server.once('connection', ok));
+    const consumer = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}`);
+    consumer.on('error', () => {}); cleanups.push(() => consumer.terminate());
+    await new Promise<void>(ok => consumer.once('open', ok)); consumer.pause();
+    const socket = await accepted; socket.on('error', () => {});
+    const total = 32 * 1024 * 1024, chunk = Buffer.alloc(CHUNK, 73);
+    let produced = 0, received = 0;
+    consumer.on('message', data => { received += Buffer.byteLength(data as Buffer); });
+    const source = new Duplex({ highWaterMark: CHUNK, read() {
+      while (produced < total) { produced += chunk.length; if (!this.push(chunk)) return; }
+    }, write(_data, _encoding, done) { done(); } });
+    const budget = new QueueBudget(2 * QUEUE_LIMIT);
+    const stop = bridge(source, createWebSocketStream(socket, { highWaterMark: CHUNK }), socket, new Bandwidth(100 * 1024 * 1024), budget);
+    cleanups.push(stop);
+    await new Promise(ok => setTimeout(ok, 400));
+    expect(produced).toBeLessThan(total); expect(source.destroyed).toBe(false);
+    expect(budget.bytes).toBe(2 * QUEUE_LIMIT);
+    consumer.resume(); await until(() => received === total, 15000);
+    stop(); expect(budget.bytes).toBe(0);
+  }, 20000);
+  it('rejects a ticket borrowed from another live session without consuming its owner ticket', async () => {
+    const fixture = await setup(); await until(() => fixture.hub.online(fixture.sessionId));
+    const { service, hub, connector } = fixture;
+    const makePeer = async () => {
+      const browser = hash(token()), pair = deviceKeys();
+      const invitation = await service.createInvitation({ helperName: 'Other', purpose: 'ticket isolation' }, randomUUID());
+      const { id } = await service.accept(invitation.inviteUrl.split('/').at(-1)!, browser, randomUUID());
+      const boot = await service.bootstrap(browser, randomUUID());
+      const enrollment = { ...fixture.store.read().enrollment!, sessionId: id, enrollmentId: boot.enrollmentId!, devicePublicKey: pair.publicKey };
+      await service.enroll(enrollment, boot.bootstrapKey!, deviceSign(pair.privateKey, deviceMessage('enroll', boot.instanceId!, boot.epoch!, id, hash(boot.bootstrapKey!), enrollment)));
+      const control = connector(new URL('/api/v1/device/control', service.origin).href, {});
+      control.on('error', () => {}); cleanups.push(() => control.terminate());
+      const hello = { protocolVersion: 1, devicePublicKey: pair.publicKey };
+      const opens: { streamId: string; ticket: string }[] = [];
+      let generation = 0;
+      control.on('message', raw => {
+        const input = ControlMessage.parse(JSON.parse(raw.toString()));
+        if (input.type === 'challenge') {
+          const { nonce } = input.payload as { nonce: string };
+          control.send(JSON.stringify(message('auth', boot.epoch!, id, 0, { nonce, signature: deviceSign(pair.privateKey, deviceMessage('control', boot.instanceId!, boot.epoch!, id, nonce, hello)) })));
+        } else if (input.type === 'ready') generation = input.generation;
+        else if (input.type === 'open') opens.push(input.payload as { streamId: string; ticket: string });
+      });
+      await new Promise<void>(ok => control.once('open', ok));
+      control.send(JSON.stringify(message('hello', boot.epoch!, id, 0, hello)));
+      await until(() => generation > 0);
+      const owner = hub.open(id, true); cleanups.push(() => owner.destroy());
+      await until(() => opens.length === 1);
+      return { id, ...opens[0]! };
+    };
+    const first = await makePeer(), second = await makePeer();
+    // Both tickets are fresh and unconsumed, issued by the same hub to distinct identities.
+    const stolen = connector(new URL('/api/v1/device/streams/' + second.streamId, service.origin).href, { headers: { Authorization: 'Bearer ' + first.ticket } });
+    stolen.on('error', () => {});
+    expect(await new Promise<number>(ok => stolen.once('unexpected-response', (_req, res) => { ok(res.statusCode!); res.resume(); stolen.terminate(); }))).toBe(403);
+    const legitimate = connector(new URL('/api/v1/device/streams/' + second.streamId, service.origin).href, { headers: { Authorization: 'Bearer ' + second.ticket } });
+    legitimate.on('error', () => {}); cleanups.push(() => legitimate.terminate());
+    await new Promise<void>((ok, fail) => { legitimate.once('open', ok); legitimate.once('error', fail); });
+    expect(service.summary(first.id).authorization).toBe('enrolled');
+    expect(service.summary(second.id).authorization).toBe('enrolled');
+    expect(hub.online(fixture.sessionId)).toBe(true);
+  }, 20000);
+  it('preserves authority, private key and cumulative metrics across an S service restart', async () => {
+    const fixture = await setup();
+    await until(() => fixture.hub.online(fixture.sessionId));
+    const generation = fixture.service.sessions.get(fixture.sessionId)!.generation;
+    const credentials = fixture.service.credentials(fixture.sessionId);
+    const before = fixture.hub.metrics(fixture.sessionId);
+    await fixture.restart();
+    await until(() => fixture.hub.online(fixture.sessionId), 12000);
+    expect(fixture.service.summary(fixture.sessionId).authorization).toBe('enrolled');
+    expect(fixture.service.credentials(fixture.sessionId)).toEqual(credentials);
+    expect(fixture.service.sessions.get(fixture.sessionId)!.generation).toBeGreaterThan(generation);
+    const after = fixture.hub.metrics(fixture.sessionId);
+    expect(after.sshBytesSToC).toBeGreaterThanOrEqual(before.sshBytesSToC);
+    expect(after.sshConnectionsOpened).toBeGreaterThan(before.sshConnectionsOpened);
+    expect(fixture.isRevoked()).toBe(false);
+  }, 20000);
+  it('takes over a device generation and closes old streams without revoking', async () => {
+    const fixture = await setup(); await until(() => fixture.hub.online(fixture.sessionId));
+    const client = await fixture.hub.connect(fixture.sessionId); let closed = false;
+    client.once('close', () => { closed = true; });
+    const generation = fixture.service.sessions.get(fixture.sessionId)!.generation;
+    const copy = new StateStore(fixture.sessionId, join(fixture.root, 'copy')); copy.write(fixture.store.read());
+    const abort = new AbortController();
+    const running = runTunnel(copy, async () => { throw new Error('Unexpected revocation'); }, abort.signal, fixture.connector);
+    cleanups.push(async () => { abort.abort(); await running; });
+    await until(() => fixture.service.sessions.get(fixture.sessionId)!.generation > generation);
+    fixture.controller.abort(); await fixture.running;
+    await until(() => closed && fixture.hub.online(fixture.sessionId));
+    expect(fixture.service.summary(fixture.sessionId).authorization).toBe('enrolled');
+  }, 20000);
+  it('enforces per-session stream capacity and returns capacity after closing a stream', async () => {
+    const { hub, sessionId, service } = await setup(); await until(() => hub.online(sessionId));
+    const streams = Array.from({ length: 4 }, () => hub.open(sessionId));
+    cleanups.push(() => { for (const stream of streams) stream.destroy(); });
+    expect(() => hub.open(sessionId)).toThrow('LIMIT_EXCEEDED');
+    streams[0]!.destroy();
+    await until(() => streams[0]!.closed);
+    const replacement = hub.open(sessionId); replacement.destroy();
+    expect(service.summary(sessionId).authorization).toBe('enrolled');
+  }, 15000);
+  it('rejects input before PTY readiness and honors an early terminal close without revoking', async () => {
+    const { service, server, address, sessionId } = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>(ok => { release = ok; });
+    const waitingHub = { service, connect: async () => { await gate; throw new Error('Not connected'); }, operation() {} } as unknown as TunnelHub;
+    const shells = new Shells(waitingHub, () => true); shells.attach(server);
+    cleanups.push(() => { release(); shells.close(); });
+    for (const earlyClose of [false, true]) {
+      const ticket = shells.create(sessionId, {});
+      const ws = new WebSocket(`ws://127.0.0.1:${address.port}/api/v1/shells/${ticket.shellId}/stream`, { headers: { Host: 'example.invalid:5116', 'X-NR-Ticket': ticket.ticket } });
+      cleanups.push(() => ws.terminate()); ws.on('error', () => {});
+      const closed = new Promise<number>(ok => ws.once('close', ok));
+      await new Promise<void>(ok => ws.once('open', ok));
+      if (earlyClose) ws.send(JSON.stringify({ type: 'close' })); else ws.send(Buffer.from('early input'));
+      expect(await closed).toBe(earlyClose ? 1005 : 1008);
+    }
+    expect(service.summary(sessionId).authorization).toBe('enrolled');
+  }, 15000);
   it('reserves concurrent execution capacity before persistence and permits idempotent replay at capacity', async () => {
     const { service, hub, sessionId } = await setup();
     let release!: () => void;
