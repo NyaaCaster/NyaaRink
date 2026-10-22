@@ -9,6 +9,7 @@ import { install, installHooks, localRevoke } from './install.js';
 import { DeviceApi } from './api.js';
 import { StateStore } from './state.js';
 import { installRuntime } from './runtime.js';
+import { runTunnel } from './tunnel.js';
 
 async function confirm(text: string) {
   if (!stdin.isTTY) throw new Error('需要交互终端确认，请在本机终端运行');
@@ -37,8 +38,10 @@ async function main() {
       Object.assign(hooks, installHooks(confirm, selected));
     }
     const runtime = installRuntime(dirname(resolve(process.argv[1]!)));
-    await install(bootstrap, new StateStore(bootstrap.sessionId), runtime, hooks);
-    console.log(`本地准备完成；会话 ${bootstrap.sessionId}。断网不撤权。`); return;
+    const store = new StateStore(bootstrap.sessionId);
+    await install(bootstrap, store, runtime, hooks);
+    console.log(`本地准备完成；会话 ${bootstrap.sessionId}。断网不撤权。`);
+    await runTunnel(store, () => localRevoke(store, hooks)); return;
   }
   if (!values.session) throw new Error('用法：status|resume|resume-browser <code>|disconnect|cleanup --session <UUID>');
   const store = new StateStore(values.session), state = store.read();
@@ -58,7 +61,7 @@ async function main() {
     }
     if (state.phase === 'cleaned') return;
     if (command === 'cleanup') throw new Error('有效授权不能作为垃圾清理，请显式disconnect');
-    throw new Error('隧道恢复模块尚未交付；本地授权保持。');
+    await runTunnel(store, () => localRevoke(store, hooks)); return;
   }
   if (command === 'resume-browser') {
     if (state.phase !== 'ready' || !code || !/^[A-Z2-7]{12}$/.test(code)) throw new Error('需要有效会话和12位恢复码');

@@ -8,7 +8,7 @@
 - 浏览器：HttpOnly Cookie、严格Origin与CSRF，不能调用S管理接口。浏览器WS只读事件使用Cookie并严格核验Origin。
 - 设备：登记后nonce签名和设备绑定，设备身份不能调用管理API；数据ticket只用于一条流。仅清理的撤销设备身份不能恢复SSH访问。
 - OpenSSH本地代理：S私有Unix socket，0700目录、0600 socket，校验OS访问身份和会话状态，不监听公网或默认TCP端口。
-- JSON body默认上限32KiB；命令字段最大16KiB；创建邀请的名称128字符、目的1024字符，文本仅作为文本渲染。文件独立流接口，不能用JSON/base64绕过限额。
+- JSON body默认上限32KiB；仅`/mcp`为适配最大1MiB文件的base64封装放宽至1450KiB，工具仍独立校验解码后1MiB限额；命令字段最大16KiB；创建邀请的名称128字符、目的1024字符，文本仅作为文本渲染。文件独立流接口，不能用JSON/base64绕过限额。
 - 所有请求有requestId；错误返回 `{error:{code,message,retryable,requestId}}`，不带密钥/栈/底层完整命令。HTTP401未鉴权、403越权、404无效资源、409状态冲突、410已撤销（仅已鉴权对象可见）、413超限、429限流、503冻结/离线。
 - 幂等写接口使用Idempotency-Key与主体hash，最长保留至相关授权撤销；同Key不同主体409。限流失败不消耗邀请。
 
@@ -40,8 +40,8 @@
 | GET /api/v1/executions/{id} | S | 状态及限额内内存输出，含truncated与expiresAt |
 | POST /api/v1/executions/{id}/cancel | S | 取消任务，不撤销授权 |
 | POST /api/v1/sessions/{id}/shells | S | 创建交互终端，获得30秒一次shell连接ticket |
-| GET /api/v1/shells/{id}/stream | S+ticket | WSS终端数据及resize/close，不在URL放ticket |
-| PUT /api/v1/sessions/{id}/files | S | 流式上传，目标路径经结构化元数据传递 |
+| GET /api/v1/shells/{id}/stream | S+ticket | WSS终端数据及resize/close，通过`X-NR-Ticket`请求头传递ticket，不在URL放ticket |
+| PUT /api/v1/sessions/{id}/files | S | 流式上传，目标路径使用URL编码的path查询参数传递 |
 | GET /api/v1/sessions/{id}/files | S | 流式下载，通过编码path参数定位，不接收凭据 |
 | GET /api/v1/sessions/{id}/ssh-config | S | 返回仅S容器内可用的config路径和安全用法，不含私钥 |
 | GET /healthz | 无 | 仅ready/frozen及版本，无会话数、主机或配置 |
@@ -83,6 +83,8 @@ SFTP默认路径限制为C确认的账户home及其子路径，每文件上限10
 
 统一CLI名`nyaarink`：`invite create/cancel`、`session list/status/metrics/disconnect`、`exec`、`execution status/cancel`、`shell`、`upload/download`、`ssh-config`、`mcp stdio`。`session disconnect --session <id>`为主动撤销命令；S端CLI在明确指定对象时可由已授权Agent直接调用，说明不能用Ctrl+C/SSH exit代替。
 
-CLI HTTPS/WSS到S，管理Key读取环境变量，不把Key写到配置示例。`mcp stdio`桥把本地stdio翻译成经鉴权的S调用，stdout仅MCP消息、日志stderr；桥进程停止不撤权。不能将本地文件路径当成S或C路径，上传CLI明确读取协助者本机文件。
+CLI HTTPS/WSS到S，基址与管理Key分别读取`PUBLIC_BASE_URL`与`MCP_API_KEY`环境变量，不把Key写到配置示例。`mcp stdio`桥把本地stdio翻译成经鉴权的S调用，stdout仅MCP消息、日志stderr；桥进程停止不撤权。不能将本地文件路径当成S或C路径，上传CLI明确读取协助者本机文件。
 
 Codex、Claude Code、OpenCode、zcode分别建立验收行：准确版本、stdio桥实测、可用时StreamableHTTP+Bearer实测、工具发现、未鉴权拒绝、创建邀请、执行/轮询、显式断开。V1要求四者至少一个通用路径实测通过；若某工具名称、可安装渠道或版本不明确，先确认，不能虚构通过。未实测前都标未验证，不因用户曾安装某工具就标通过。
+
+实现指标说明：`sshConnectionsOpened`为服务管理的已认证SSH连接计数；原生OpenSSH直接经私有socket使用者不纳入此认证计数，其隧道字节仍计入流量。`apiOperations`计受理的exec、终端和文件操作；原始SSH协议发包数无法可靠等同于访问请求数。页面明确展示受控连接与字节，RTT为控制WSS心跳往返毫秒。

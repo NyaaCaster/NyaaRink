@@ -7,22 +7,27 @@ import { equal, hash, mac, token } from './crypto.js';
 import type { Config } from './config.js';
 import { Artifacts, connectionScript } from './artifacts.js';
 import { join } from 'node:path';
+import type { NativeSSH } from './proxy.js';
+import type { Operations } from './operations.js';
+import type { Files } from './files.js';
+import { makeMcp } from './mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { authorized } from './management.js';
+import type { Shells } from './shells.js';
+import { browserCredential, browserKey } from './browser.js';
 
 export type RouteConfig = Pick<Config, 'PUBLIC_BASE_URL' | 'MCP_API_KEY' | 'MCP_API_KEY_PREVIOUS' | 'API_KEY_PREVIOUS_UNTIL' | 'masterKey'>;
 const Id = z.string().uuid();
 const Credential = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const Signed = z.object({ sessionId: Id, nonce: Credential, signature: z.string().min(64).max(256) });
-export function routes(service: RinkService, config: RouteConfig, artifacts?: Artifacts) {
+export function routes(service: RinkService, config: RouteConfig, artifacts?: Artifacts, native?: NativeSSH, operations?: Operations, files?: Files, shells?: Shells) {
   const router = Router(), buckets = new Map<string, { count: number; until: number }>();
   const origin = new URL(config.PUBLIC_BASE_URL).origin;
-  const cookieKey = Buffer.from(mac(config.masterKey, 'browser-cookie-v1'), 'hex');
+  const cookieKey = browserKey(config.masterKey);
   const requestKey = (req: Request) => Id.parse(req.get('Idempotency-Key'));
   const csrf = (value: string) => mac(cookieKey, 'csrf:' + hash(value));
   const browser = (req: Request, res: Response, establish = false) => {
-    const cookies = (req.headers.cookie ?? '').split(';').map(c => c.trim()).filter(c => c.startsWith('__Host-nr='));
-    const value = cookies.length === 1 ? cookies[0]!.slice('__Host-nr='.length) : '';
-    const parts = value.split('.');
-    if (parts.length === 2 && Credential.safeParse(parts[0]).success && equal(parts[1]!, mac(cookieKey, parts[0]!))) return value;
+    try { return browserCredential(req, cookieKey); } catch { /* Establish only on a safe read. */ }
     if (!establish) throw new DomainError('UNAUTHORIZED', 401);
     const raw = token(), next = raw + '.' + mac(cookieKey, raw);
     res.cookie('__Host-nr', next, { secure: true, httpOnly: true, sameSite: 'strict', path: '/', maxAge: 365 * 24 * 3600_000 }); return next;
@@ -45,16 +50,34 @@ export function routes(service: RinkService, config: RouteConfig, artifacts?: Ar
     res.sendFile(join(artifacts.directory, item.filename));
   });
   const manage = (req: Request, _res: Response, next: NextFunction) => {
-    const header = req.get('authorization') ?? '', key = header.startsWith('Bearer ') ? header.slice(7) : '';
-    const current = equal(hash(key), hash(config.MCP_API_KEY));
-    const previous = !!config.MCP_API_KEY_PREVIOUS && Date.parse(config.API_KEY_PREVIOUS_UNTIL) > Date.now() && equal(hash(key), hash(config.MCP_API_KEY_PREVIOUS));
-    if (!current && !previous) throw new DomainError('UNAUTHORIZED', 401); next();
+    if (!authorized(req, config)) throw new DomainError('UNAUTHORIZED', 401); next();
   };
   const browserWrite = (req: Request, res: Response, next: NextFunction) => {
     const value = browser(req, res);
     if (req.get('origin') !== origin || !equal(req.get('X-NR-CSRF') ?? '', csrf(value))) throw new DomainError('UNAUTHORIZED', 403);
     res.locals.browserHash = hash(value); next();
   };
+  router.post('/mcp', manage, async (req, res) => {
+    const server = makeMcp(service, operations, native, files);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.once('close', () => { void transport.close(); void server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  });
+  router.all('/mcp', manage, (_req, res) => { res.set('Allow', 'POST').status(405).end(); });
+  if (shells) router.post('/api/v1/sessions/:id/shells', manage, (req, res) => { res.status(201).json(shells.create(Id.parse(req.params.id), req.body)); });
+  if (files) {
+    router.put('/api/v1/sessions/:id/files', manage, async (req, res) => {
+      if (!req.is('application/octet-stream')) throw new DomainError('INVALID_REQUEST', 400);
+      const path = z.string().min(1).max(4096).parse(req.query.path);
+      res.json(await files.transfer(Id.parse(req.params.id), path, 'upload', req));
+    });
+    router.get('/api/v1/sessions/:id/files', manage, async (req, res) => {
+      const path = z.string().min(1).max(4096).parse(req.query.path);
+      res.type('application/octet-stream');
+      await files.transfer(Id.parse(req.params.id), path, 'download', res);
+    });
+  }
   router.post('/api/v1/invitations', manage, async (req, res) => { res.status(201).json(await service.createInvitation(req.body, requestKey(req))); });
   router.get('/api/v1/invitations/:id', manage, (req, res) => { res.json(service.invitation(Id.parse(req.params.id))); });
   router.post('/api/v1/invitations/:id/cancel', manage, async (req, res) => { res.json(await service.cancelInvitation(Id.parse(req.params.id))); });
@@ -63,6 +86,16 @@ export function routes(service: RinkService, config: RouteConfig, artifacts?: Ar
     const items = service.list(); res.json({ items: items.slice(offset, offset + limit), nextOffset: offset + limit < items.length ? offset + limit : null });
   });
   router.get('/api/v1/sessions/:id', manage, (req, res) => { res.json(service.summary(Id.parse(req.params.id))); });
+  router.get('/api/v1/sessions/:id/metrics', manage, (req, res) => { const id = Id.parse(req.params.id); res.json(service.transport?.metrics(id) ?? service.savedMetrics(id)); });
+  if (operations) {
+    router.post('/api/v1/sessions/:id/executions', manage, async (req, res) => { res.status(202).json(await operations.start(Id.parse(req.params.id), req.body, requestKey(req))); });
+    router.get('/api/v1/executions/:id', manage, (req, res) => { res.json(operations.get(Id.parse(req.params.id))); });
+    router.post('/api/v1/executions/:id/cancel', manage, (req, res) => { res.json(operations.cancel(Id.parse(req.params.id))); });
+  }
+  router.get('/api/v1/sessions/:id/ssh-config', manage, async (req, res) => {
+    if (!native) throw new DomainError('OFFLINE', 503);
+    res.json(await native.get(Id.parse(req.params.id)));
+  });
   router.post('/api/v1/sessions/:id/disconnect', manage, async (req, res) => { res.json(await service.disconnect(Id.parse(req.params.id), 's_operator')); });
   router.get('/api/v1/browser/context', (req, res) => { const value = browser(req, res, true); res.json({ csrf: csrf(value) }); });
   router.get('/api/v1/browser/invitation', (req, res) => { const value = browser(req, res, true); res.json({ ...service.invitationPage(Credential.parse(req.query.code), hash(value)), csrf: csrf(value) }); });
@@ -97,6 +130,7 @@ export function routes(service: RinkService, config: RouteConfig, artifacts?: Ar
   return router;
 }
 export function errorHandler(error: unknown, _req: Request, res: Response, _next: NextFunction) {
+  if (res.headersSent || res.destroyed) { res.destroy(); return; }
   const known = error instanceof DomainError, invalid = error instanceof z.ZodError || (error as { type?: string })?.type === 'entity.parse.failed';
   const large = (error as { type?: string })?.type === 'entity.too.large';
   res.status(known ? error.status : large ? 413 : invalid ? 400 : 500).json({ error: {

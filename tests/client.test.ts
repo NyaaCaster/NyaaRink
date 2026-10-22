@@ -12,7 +12,7 @@ import { DeviceApi } from '../apps/client/src/api.js';
 import { token } from '../apps/server/src/crypto.js';
 import { connectionScript } from '../apps/server/src/artifacts.js';
 import type { BootstrapData } from '../packages/contracts/device.js';
-import { sshVersion, matchesWindowsService, requireSshCapabilities, inspectConfig } from '../apps/client/src/platform.js';
+import { sshVersion, matchesWindowsService, requireSshCapabilities, inspectConfig, requireLinuxService, requireLinuxRuntime } from '../apps/client/src/platform.js';
 import { windowsInspectionScript } from '../apps/client/src/windows-inspection.js';
 import { windowsEnvironment } from '../apps/client/src/windows.js';
 
@@ -23,6 +23,16 @@ function bootstrap(): BootstrapData { return { v: 1, sessionId: randomUUID(), en
 function state(boot: BootstrapData): State { const pair = deviceKeys(); return { v: 1, bootstrap: boot, phase: 'ready', devicePrivateKey: pair.privateKey, devicePublicKey: pair.publicKey, runtime: root(), cleanup: 'pending', reported: false, releaseVersion: '0.1.0' }; }
 const ssh = () => utils.generateKeyPairSync('ed25519', {}).public;
 describe('C installation and irreversible cleanup', () => {
+  it('pins the running Linux service executable and detects a main PID change during inspection', () => {
+    expect(() => requireLinuxRuntime('123', '/usr/sbin/sshd', '123\n')).not.toThrow();
+    for (const [pid, path, current] of [['0', '/usr/sbin/sshd', '0'], ['123', '/tmp/sshd', '123'], ['123', '/usr/sbin/sshd (deleted)', '123'], ['123', '/usr/sbin/sshd', '124']]) expect(() => requireLinuxRuntime(pid!, path!, current!)).toThrow();
+  });
+  it('rejects Linux service configuration overrides instead of inspecting a different daemon', () => {
+    const unit = 'ExecStart={ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -D $SSHD_OPTS ; ignore_errors=no ; pid=1 ; }\nEnvironment=\nEnvironmentFiles=/etc/default/ssh (ignore_errors=yes)';
+    expect(() => requireLinuxService(unit, '# defaults\nSSHD_OPTS=""')).not.toThrow();
+    for (const altered of [unit.replace(' -D $SSHD_OPTS', ' -D -f /tmp/custom'), unit.replace('Environment=\n', 'Environment=SSHD_OPTS=-oPermitTTY=no\n'), unit.replace('/etc/default/ssh', '/tmp/env')]) expect(() => requireLinuxService(altered, '')).toThrow();
+    for (const file of ['SSHD_OPTS="-f /tmp/custom"', 'SSHD_OPTS=$(command)', '. /tmp/other']) expect(() => requireLinuxService(unit, file)).toThrow();
+  });
   it('inspects Match configuration without testing host keys and falls back for older daemons', () => {
     const context = ['-C', 'user=ordinary,addr=127.0.0.1'];
     const modern = vi.fn(() => 'pubkeyauthentication yes');

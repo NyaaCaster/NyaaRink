@@ -6,13 +6,16 @@ import { DEFAULTS, DomainError, InvitationInput } from '@nyaarink/contracts';
 import { Authority, type AuthorityEvent } from './authority.js';
 import { Projection } from './projection.js';
 import { deviceMessage, deviceVerify, equal, hash, token } from './crypto.js';
+import { ExecutionRecord, ExecutionResult } from '../../../packages/contracts/operations.js';
 
 const Id = z.string().uuid(), Digest = z.string().regex(/^[a-f0-9]{64}$/), Time = z.iso.datetime();
+const Metrics = z.object({ sshBytesSToC: z.number().nonnegative(), sshBytesCToS: z.number().nonnegative(), sshConnectionsOpened: z.number().int().nonnegative(), onlineSeconds: z.number().nonnegative(), apiOperations: z.number().int().nonnegative() }).strict();
+export type SessionMetrics = z.infer<typeof Metrics>;
 export { Enrollment, type EnrollmentData } from '../../../packages/contracts/device.js';
 import { Enrollment, type EnrollmentData } from '../../../packages/contracts/device.js';
 const Invite = InvitationInput.extend({ id: Id, codeHash: Digest, expiresAt: Time, requestKey: Digest, inputHash: Digest });
 type Invitation = z.infer<typeof Invite> & { state: 'issued' | 'consumed' | 'cancelled'; sessionId?: string };
-type Session = { id: string; inviteId: string; browserHash: string; acceptedAt: string; authorization: 'accepted' | 'enrolled' | 'revoked';
+type Session = { id: string; inviteId: string; browserHash: string; acceptedAt: string; authorization: 'accepted' | 'enrolled' | 'revoked'; generation: number;
   requestKey: string; inputHash: string; bootstrap?: { hash: string; enrollmentId: string; expiresAt: string; secretId: string };
   device?: EnrollmentData; revokedAt?: string; actor?: string; sCleanup: 'not_needed' | 'pending' | 'confirmed' | 'failed'; cCleanup: 'not_needed' | 'pending' | 'confirmed' | 'failed' };
 type SessionSecret = { sshPrivate: string; sshPublic: string };
@@ -25,16 +28,23 @@ export const Payloads = {
   revoke: z.object({ id: Id, actor: z.enum(['s_operator', 'c_browser', 'c_local']), nonceHash: Digest.optional() }).strict(),
   cleanup: z.object({ id: Id, result: z.enum(['confirmed', 'failed']), nonceHash: Digest }).strict(),
   browser: z.object({ id: Id, browserHash: Digest, nonceHash: Digest }).strict(),
+  generation: z.object({ id: Id, generation: z.number().int().positive() }).strict(),
+  metrics: z.object({ id: Id, value: Metrics }).strict(),
+  execution: ExecutionRecord,
+  executionResult: ExecutionResult,
 };
 type EventType = keyof typeof Payloads;
 export class RinkService extends EventEmitter {
   readonly invitations = new Map<string, Invitation>();
   readonly sessions = new Map<string, Session>();
+  readonly executions = new Map<string, z.infer<typeof ExecutionRecord> & { state: z.infer<typeof ExecutionResult>['state']; exitCode: number | null }>();
   private idempotency = new Map<string, { inputHash: string; sessionId: string; secretId?: string }>();
   private queue: Promise<unknown> = Promise.resolve();
   private challenges = new Map<string, { sessionId: string; operation: string; until: number }>();
   private recoveries = new Map<string, { browserHash: string; until: number; attempts: number }>();
   private usedNonces = new Set<string>();
+  private totals = new Map<string, SessionMetrics>();
+  transport?: { online(id: string): boolean; metrics(id: string): Record<string, unknown> };
   private constructor(readonly authority: Authority, readonly projection: Projection, readonly origin: string) { super(); }
   static async open(authority: Authority, directory: string, origin: string) {
     const projection = await Projection.open(directory, authority);
@@ -73,7 +83,7 @@ export class RinkService extends EventEmitter {
       const data = Payloads.accept.parse(p), invite = this.invitations.get(data.inviteId);
       if (!invite || invite.state !== 'issued' || this.sessions.has(data.id)) throw new Error('Invalid acceptance');
       invite.state = 'consumed'; invite.sessionId = data.id;
-      this.sessions.set(data.id, { ...data, acceptedAt: event.time, authorization: 'accepted', sCleanup: 'not_needed', cCleanup: 'not_needed' });
+      this.sessions.set(data.id, { ...data, generation: 0, acceptedAt: event.time, authorization: 'accepted', sCleanup: 'not_needed', cCleanup: 'not_needed' });
       this.idempotency.set(data.requestKey, { inputHash: data.inputHash, sessionId: data.id }); return;
     }
     if (type === 'bootstrap') {
@@ -98,16 +108,37 @@ export class RinkService extends EventEmitter {
       if (s.authorization !== 'revoked') throw new Error('Cleanup before revocation');
       s.cCleanup = data.result; this.usedNonces.add(data.nonceHash); return;
     }
+    if (type === 'generation') {
+      const data = Payloads.generation.parse(p), s = this.require(data.id);
+      if (s.authorization !== 'enrolled' || data.generation !== s.generation + 1) throw new Error('Invalid generation');
+      s.generation = data.generation; return;
+    }
+    if (type === 'metrics') {
+      const data = Payloads.metrics.parse(p), previous = this.savedMetrics(data.id);
+      if (Object.keys(previous).some(key => data.value[key as keyof SessionMetrics] < previous[key as keyof SessionMetrics])) throw new Error('Metrics regressed');
+      this.totals.set(data.id, data.value); return;
+    }
+    if (type === 'execution') {
+      const data = ExecutionRecord.parse(p); this.require(data.sessionId);
+      if (this.executions.has(data.id)) throw new Error('Duplicate execution');
+      this.executions.set(data.id, { ...data, state: 'interrupted', exitCode: null }); return;
+    }
+    if (type === 'executionResult') {
+      const data = ExecutionResult.parse(p), record = this.executions.get(data.id);
+      if (!record) throw new Error('Unknown execution');
+      record.state = data.state; record.exitCode = data.exitCode; return;
+    }
     const data = Payloads.browser.parse(p), s = this.require(data.id);
     if (s.authorization === 'revoked') throw new Error('Recovery after revocation');
     s.browserHash = data.browserHash; this.usedNonces.add(data.nonceHash);
   }
   private require(id: string) { const s = this.sessions.get(id); if (!s) throw new DomainError('NOT_FOUND', 404); return s; }
-  private async mutate<T>(fn: () => T): Promise<T> {
+  private async mutate<T>(fn: () => T, project = true): Promise<T> {
     const run = this.queue.then(async () => {
       this.authority.assertAvailable();
       const previousSeq = this.authority.events.length, previousState = JSON.stringify(this.snapshot());
       const result = fn();
+      if (!project) return result;
       if (previousSeq === this.authority.events.length && previousState === JSON.stringify(this.snapshot())) return result;
       try { await this.projection.backup(this.authority); }
       catch { this.authority.freeze('BACKUP_FAILED'); throw new DomainError('FROZEN', 503); }
@@ -212,16 +243,40 @@ export class RinkService extends EventEmitter {
   summary(id: string) {
     const s = this.require(id), invitation = this.invitations.get(s.inviteId)!;
     return { id, authorization: s.authorization, acceptedAt: s.acceptedAt, revokedAt: s.revokedAt,
-      connectivity: s.device ? 'offline' : 'waiting', frozen: this.authority.frozen, helperName: invitation.helperName, purpose: invitation.purpose,
+      connectivity: this.transport?.online(id) ? 'online' : s.device ? 'offline' : 'waiting', frozen: this.authority.frozen, helperName: invitation.helperName, purpose: invitation.purpose,
       account: s.device?.account, platform: s.device?.platform, sCleanup: s.sCleanup, cCleanup: s.cCleanup };
   }
   list() { return [...this.sessions.keys()].map(id => this.summary(id)); }
+  acceptExecution(id: string, inputHash: string, requestId: string, admit: () => void = () => {}) {
+    const requestKey = this.key('execution:' + id, requestId);
+    return this.mutate(() => {
+      this.activeSummary(id);
+      const old = [...this.executions.values()].find(record => record.requestKey === requestKey);
+      if (old) { if (old.inputHash !== inputHash) throw new DomainError('CONFLICT', 409); return { record: { ...old }, replay: true }; }
+      admit();
+      const data = { id: randomUUID(), sessionId: id, requestKey, inputHash, createdAt: new Date().toISOString() };
+      this.commit('execution', data); return { record: { ...this.executions.get(data.id)! }, replay: false };
+    });
+  }
+  finishExecution(id: string, state: z.infer<typeof ExecutionResult>['state'], exitCode: number | null) {
+    return this.mutate(() => { this.commit('executionResult', { id, state, exitCode }); });
+  }
+  savedMetrics(id: string): SessionMetrics { this.require(id); return { ...(this.totals.get(id) ?? { sshBytesSToC: 0, sshBytesCToS: 0, sshConnectionsOpened: 0, onlineSeconds: 0, apiOperations: 0 }) }; }
+  saveMetrics(id: string, value: SessionMetrics) {
+    const sample = Metrics.parse(value);
+    return this.mutate(() => {
+      const previous = this.savedMetrics(id);
+      if (Object.keys(previous).some(key => sample[key as keyof SessionMetrics] < previous[key as keyof SessionMetrics])) throw new Error('Metrics regressed');
+      if (JSON.stringify(previous) !== JSON.stringify(sample)) this.commit('metrics', { id, value: sample });
+    }, false);
+  }
   credentials(id: string) { this.activeSummary(id); const s = this.require(id); if (!s.device) throw new DomainError('OFFLINE', 503); return { ...this.authority.secret<SessionSecret>(id), device: s.device }; }
   private cleanServer(s: Session) {
     try {
       this.authority.deleteSecret(s.id); this.authority.deleteSecret(s.inviteId);
       // Remove every historical bootstrap response, including a crash-orphaned replacement.
       for (const old of this.idempotency.values()) if (old.sessionId === s.id && old.secretId) this.authority.deleteSecret(old.secretId);
+      this.emit('cleanup', s.id);
       s.sCleanup = 'confirmed';
     } catch { s.sCleanup = 'failed'; }
   }
@@ -238,7 +293,7 @@ export class RinkService extends EventEmitter {
   challenge(sessionId: string, operation: string) {
     this.authority.assertAvailable(); const s = this.require(sessionId);
     if (!s.device || !['control', 'disconnect', 'cleanup-ack', 'recover-browser'].includes(operation)) throw new DomainError('UNAUTHORIZED', 401);
-    if (s.authorization === 'revoked' && !['disconnect', 'cleanup-ack'].includes(operation)) throw new DomainError('REVOKED', 410);
+    if (s.authorization === 'revoked' && !['control', 'disconnect', 'cleanup-ack'].includes(operation)) throw new DomainError('REVOKED', 410);
     this.expireTransient(); if (this.challenges.size >= 1000) throw new DomainError('LIMIT_EXCEEDED', 429);
     const nonce = token(); this.challenges.set(hash(nonce), { sessionId, operation, until: Date.now() + 30000 });
     return { nonce, ...this.authority.identity };
@@ -249,6 +304,16 @@ export class RinkService extends EventEmitter {
     const { instanceId, epoch } = this.authority.identity;
     if (!deviceVerify(s.device.devicePublicKey, deviceMessage(operation, instanceId, epoch, sessionId, nonce, body), signature)) throw new DomainError('UNAUTHORIZED', 401);
     this.challenges.delete(nonceHash); return nonceHash;
+  }
+  activate(id: string, nonce: string, hello: unknown, signature: string) {
+    this.verifyDevice(id, 'control', nonce, hello, signature);
+    return this.mutate(() => {
+      const s = this.require(id);
+      if (s.authorization === 'revoked') return { revoked: true, generation: s.generation };
+      if (s.authorization !== 'enrolled') throw new DomainError('OFFLINE', 503);
+      this.commit('generation', { id, generation: s.generation + 1 });
+      return { revoked: false, generation: s.generation };
+    });
   }
   deviceDisconnect(id: string, nonce: string, signature: string) { const digest = this.verifyDevice(id, 'disconnect', nonce, {}, signature); return this.disconnect(id, 'c_local', undefined, digest); }
   cleanupAck(id: string, result: 'confirmed' | 'failed', nonce: string, signature: string) {

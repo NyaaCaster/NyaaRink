@@ -39,6 +39,18 @@ async function enroll(service: RinkService) {
   return { ...accepted, boot, pair, data, signature, result };
 }
 describe('authority crash and integrity boundaries', () => {
+  it('replays cumulative metrics without changing authorization and rejects regression', async () => {
+    const { service, path, key, root } = await setup(), { id } = await accept(service);
+    const value = { sshBytesSToC: 13, sshBytesCToS: 21, sshConnectionsOpened: 2, onlineSeconds: 1.5, apiOperations: 1 };
+    await service.saveMetrics(id, value);
+    const count = service.authority.events.length;
+    await service.saveMetrics(id, value); expect(service.authority.events).toHaveLength(count);
+    await expect(service.saveMetrics(id, { ...value, sshBytesSToC: 0 })).rejects.toThrow('regressed');
+    await service.close(); services.splice(services.indexOf(service), 1);
+    const restored = await RinkService.open(new Authority(path, key), join(root, 'state'), service.origin); services.push(restored);
+    expect(restored.savedMetrics(id)).toEqual(value);
+    expect(restored.summary(id).authorization).toBe('accepted');
+  });
   it('refuses missing authority, wrong master key and a second writer', async () => {
     const missing = new Authority(directory(), randomBytes(32)); authorities.push(missing); expect(missing.frozen).toBe(true);
     const { path, key, a } = await setup();
@@ -120,7 +132,11 @@ describe('single-use consent, enrollment and durable revocation', () => {
     const sig = deviceSign(c.pair.privateKey, deviceMessage('disconnect', challenge.instanceId, challenge.epoch, c.id, challenge.nonce, {}));
     expect(await service.deviceDisconnect(c.id, challenge.nonce, sig)).toMatchObject({ authorization: 'revoked', sCleanup: 'confirmed', cCleanup: 'pending' });
     expect(() => service.deviceDisconnect(c.id, challenge.nonce, sig)).toThrow('UNAUTHORIZED');
-    expect(() => service.credentials(c.id)).toThrow('REVOKED'); expect(() => service.challenge(c.id, 'control')).toThrow('REVOKED');
+    expect(() => service.credentials(c.id)).toThrow('REVOKED');
+    // A revoked device may reconnect only to receive revoke and perform cleanup.
+    const reconnect = service.challenge(c.id, 'control');
+    const hello = { protocolVersion: 1, devicePublicKey: c.data.devicePublicKey };
+    expect(await service.activate(c.id, reconnect.nonce, hello, deviceSign(c.pair.privateKey, deviceMessage('control', reconnect.instanceId, reconnect.epoch, c.id, reconnect.nonce, hello)))).toMatchObject({ revoked: true, generation: 0 });
     expect(() => service.browserSession(c.browserHash)).toThrow('NOT_FOUND');
     const ack = service.challenge(c.id, 'cleanup-ack');
     const ackSig = deviceSign(c.pair.privateKey, deviceMessage('cleanup-ack', ack.instanceId, ack.epoch, c.id, ack.nonce, { result: 'confirmed' }));

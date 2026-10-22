@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { userInfo, homedir } from 'node:os';
 import { Client, utils } from 'ssh2';
@@ -29,10 +29,46 @@ export function matchesWindowsService(command: string, executable: string) {
   const path = command.trim().replace(/^"([^"\r\n]+)"$/, '$1');
   return path.toLowerCase() === executable.toLowerCase();
 }
-export function inspectServiceIdentity() {
-  if (!windows()) return;
+export async function inspectServiceIdentity(confirm?: Confirm) {
+  if (!windows()) {
+    const unit = run('systemctl', ['show', 'ssh.service', '--property=ExecStart,Environment,EnvironmentFiles,MainPID']);
+    const defaults = existsSync('/etc/default/ssh') ? readFileSync('/etc/default/ssh', 'utf8') : '';
+    requireLinuxService(unit, defaults);
+    if (confirm) {
+      const pid = /^MainPID=([1-9][0-9]*)$/m.exec(unit)?.[1];
+      if (!pid) throw new Error('SSH服务没有有效主进程；未授权上线');
+      const proc = '/proc/' + pid + '/exe';
+      let executable: string;
+      try { executable = readlinkSync(proc); }
+      catch {
+        if (!await confirm('需要本地sudo只读核验运行中sshd的实际程序路径，不更改服务或目标账户。是否继续？')) throw new Error('SSH运行程序检查未获确认；授权保留等待');
+        const result = spawnSync('sudo', ['--', '/usr/bin/readlink', '-e', proc], { stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8', timeout: 60000 });
+        if (result.status !== 0) throw new Error('无法核验运行中的SSH程序；授权保留等待');
+        executable = result.stdout.trim();
+      }
+      requireLinuxRuntime(pid, executable, run('systemctl', ['show', 'ssh.service', '--property=MainPID', '--value']));
+    }
+    return;
+  }
   const command = powershell('$s=Get-CimInstance Win32_Service -Filter "Name=\'sshd\'"; if($s){$s.PathName}');
   if (!matchesWindowsService(command, sshdExecutable())) throw new Error('SSH服务程序或启动参数不属于当前支持的系统组件；未修改服务，请由C端确认配置');
+}
+export function requireLinuxRuntime(pid: string, executable: string, currentPid: string) {
+  if (!/^[1-9][0-9]*$/.test(pid) || currentPid.trim() !== pid || executable !== '/usr/sbin/sshd') throw new Error('SSH运行程序发生变化或与系统服务不符；请重试，未授权上线');
+}
+export function requireLinuxService(unit: string, defaults: string) {
+  const properties = new Map(unit.split(/\r?\n/).map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
+  const start = properties.get('ExecStart') ?? '';
+  // Only the distribution unit with empty SSHD_OPTS is supported. Never parse
+  // shell syntax or inspect default configuration for a daemon using -f/-o.
+  if (!/^\{ path=\/usr\/sbin\/sshd ; argv\[\]=\/usr\/sbin\/sshd -D(?: \$SSHD_OPTS)? ;[^{}]*\}$/.test(start.trim()) ||
+      !/^(?:|SSHD_OPTS=|"SSHD_OPTS=")$/.test(properties.get('Environment') ?? '') ||
+      !/^(?:|\/etc\/default\/ssh \(ignore_errors=yes\))$/.test(properties.get('EnvironmentFiles') ?? '')) {
+    throw new Error('SSH systemd服务程序或参数不受支持；未修改现有服务');
+  }
+  for (const line of defaults.split(/\r?\n/).map(value => value.trim()).filter(value => value && !value.startsWith('#'))) {
+    if (!/^SSHD_OPTS=(?:|''|"")(?:\s+#.*)?$/.test(line)) throw new Error('SSH环境文件包含自定义启动参数；未修改现有配置');
+  }
 }
 export function privilegedAccount() {
   if (!windows()) return process.getuid!() === 0;
@@ -51,7 +87,7 @@ export function serviceStatus(): 'missing' | 'stopped' | 'running' {
 }
 export async function prepareSsh(confirm: Confirm) {
   const status = serviceStatus();
-  if (status !== 'missing') { inspectServiceIdentity(); inspectSshVersion(); }
+  if (status !== 'missing') { await inspectServiceIdentity(); inspectSshVersion(); }
   if (status === 'running') return;
   const text = status === 'missing'
     ? '将使用系统组件/apt安装 OpenSSH Server，启动并启用SSH系统服务；系统安装器可能创建入站规则，需检查防火墙变化。本项目只连接回环，不自动放行端口。安装服务的提权不授予管理员SSH权限。是否继续？'
@@ -73,7 +109,7 @@ export async function prepareSsh(confirm: Confirm) {
   if (serviceStatus() !== 'running') throw new Error('SSH服务仍不可用；未授权上线');
 }
 export async function localSsh(port: number, confirm: Confirm) {
-  inspectServiceIdentity();
+  await inspectServiceIdentity(confirm);
   console.log(`SSH服务：${inspectSshVersion()}；版本识别不代表安全补丁或兼容验收通过`);
   const account = userInfo().username, home = homedir();
   if (!/^[\w.@ -]+$/.test(account)) throw new Error('Unsupported local account name');
