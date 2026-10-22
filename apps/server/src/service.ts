@@ -1,13 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import ssh2 from 'ssh2';
 import { z } from 'zod';
 import { DEFAULTS, DomainError, InvitationInput } from '@nyaarink/contracts';
 import { Authority, type AuthorityEvent } from './authority.js';
 import { Projection } from './projection.js';
 import { deviceMessage, deviceVerify, equal, hash, token } from './crypto.js';
 import { ExecutionRecord, ExecutionResult } from '../../../packages/contracts/operations.js';
-const { utils } = ssh2;
+import { sshKeyPair } from './ssh-key.js';
 
 const Id = z.string().uuid(), Digest = z.string().regex(/^[a-f0-9]{64}$/), Time = z.iso.datetime();
 const Metrics = z.object({ sshBytesSToC: z.number().nonnegative(), sshBytesCToS: z.number().nonnegative(), sshConnectionsOpened: z.number().int().nonnegative(), onlineSeconds: z.number().nonnegative(), apiOperations: z.number().int().nonnegative() }).strict();
@@ -233,7 +232,7 @@ export class RinkService extends EventEmitter {
         return this.enrollmentResult(s.id);
       }
       if (!s.bootstrap || !equal(s.bootstrap.hash, hash(bootstrapKey)) || s.bootstrap.enrollmentId !== data.enrollmentId || Date.parse(s.bootstrap.expiresAt) <= Date.now()) throw new DomainError('UNAUTHORIZED', 401);
-      const pair = utils.generateKeyPairSync('ed25519');
+      const pair = sshKeyPair();
       this.authority.saveSecret(s.id, { sshPrivate: pair.private, sshPublic: pair.public });
       this.commit('enroll', { data, bootstrapHash: hash(bootstrapKey) });
       this.authority.deleteSecret(s.bootstrap.secretId); return this.enrollmentResult(s.id);

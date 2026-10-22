@@ -19,6 +19,7 @@ import { sshFiles } from '../apps/server/src/proxy.js';
 import { Operations, executionCommand } from '../apps/server/src/operations.js';
 import { ExecInput } from '../packages/contracts/operations.js';
 import { Shells } from '../apps/server/src/shells.js';
+import { sshKeyPair } from '../apps/server/src/ssh-key.js';
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -27,7 +28,7 @@ async function setup(options: { revoked?: boolean; wrongHost?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'nyaarink-tunnel-')); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const key = randomBytes(32), directory = join(root, 'authority'); Authority.initialize(directory, key);
   let service = await RinkService.open(new Authority(directory, key), join(root, 'db'), 'https://example.invalid:5116'); cleanups.push(() => service.close());
-  const host = utils.generateKeyPairSync('ed25519'), pair = deviceKeys(), clients = new Set<Connection>();
+  const host = sshKeyPair(), pair = deviceKeys(), clients = new Set<Connection>();
   const ssh = new Server({ hostKeys: [host.private] }, client => {
     clients.add(client); client.on('error', () => {}); client.once('close', () => clients.delete(client));
     client.on('authentication', ctx => {
@@ -280,7 +281,7 @@ describe('outbound tunnel security and transport', () => {
     expect(budget.bytes).toBe(0); expect(() => budget.reserve(4097)).toThrow();
   });
   it('renders pinned OpenSSH configuration without accepting configuration injection', () => {
-    const id = randomUUID(), key = utils.generateKeyPairSync('ed25519');
+    const id = randomUUID(), key = sshKeyPair();
     const parsed = utils.parseKey(key.public);
     if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('Invalid fixture');
     const files = sshFiles(id, 'ordinary', [parsed.getPublicSSH().toString('base64')], '/run/nyaarink/' + id, '/app/proxy.js');
