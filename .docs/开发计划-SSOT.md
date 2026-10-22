@@ -114,6 +114,8 @@ LE hook保留原消费者，已安装执行并用新TLS连接核验；证书有�
 
 全部本轮临时测试账户、进程、sudoers、上传目录及镜像导出已清理，本轮旧共享私密目录清理；正式授权账本撤销历史和私密恢复备份保留。P1–P8按A17交付完成，所有未测试平台/交互、独立异网WSS及自然到期续期继续明确未验证，不代表全矩阵认证。后续仅文档提交不改变运行镜像SHA，交接010是最新接续入口。
 
-## 11. P9 Windows ACL 生产反馈修复 🟡
+## 11. P9 Windows ACL 生产反馈修复 ✅
 
-2026-10-22用户反馈下载连接脚本 SetAccessControl 因 SeSecurityPrivilege 失败。实施计划见《阶段计划-P9.md》。引导及私密状态改为仅修改 DACL；授权文件原子替换显式保留原 DACL 及继承保护，不申请审计特权、不自动提高 SSH 用户权限。已在删除 SeSecurityPrivilege 的 Windows 受限进程实际执行生成脚本目录前缀、私密目录/文件、原公钥文件追加及删除，2项回归通过。完整 Windows UAC/普通用户登录恢复仍按 A17 保留未测试。发行及生产验证完成后再关闭 P9。
+2026-10-22用户反馈下载连接脚本 SetAccessControl 因 SeSecurityPrivilege 失败。实施计划见《阶段计划-P9.md》。引导及私密状态改为仅修改 DACL；授权文件原子替换显式保留原 DACL 及继承保护，不申请审计特权、不自动提高 SSH 用户权限。已在删除 SeSecurityPrivilege 的 Windows 受限进程实际执行生成脚本目录前缀、私密目录/文件、原公钥文件追加及删除，2项回归通过。完整 Windows UAC/普通用户登录恢复仍按 A17 保留未测试。发行及生产验证结果见下文。
+
+P9完成：修复发行ec164bf已提交推送并部署；双平台客户端重新签名打包，独立上传后切换私密发行目录。restart完成DB备份、权威seq114校验、签名预检、nginx及真实CA/SNI HTTPS ready；app健康、gateway运行，镜像revision均ec164bf。生产Windows下载包SHA256、离线签名及两处客户端ACL修复通过，运行server生成脚本修复核验通过，MCP列表查询成功。9文件79项、typecheck/lint/build及Python3项通过。本轮临时文件清理，原有效授权保留；C端完整重试由用户重新下载脚本进行，A17未测项保留。最新交接011。
