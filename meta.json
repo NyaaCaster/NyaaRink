@@ -1,0 +1,12 @@
+{
+  "name": "NyaaRink",
+  "description": "便捷式远程ssh控制协助服务。",
+  "descriptionEn": "Portable remote SSH control assistance service.",
+  "author": "NyaaCaster",
+  "repository": "https://github.com/NyaaCaster/NyaaRink.git",
+  "branch": "main",
+  "license": "AGPL-3.0",
+  "publicPort": 5116,
+  "status": "design-approved",
+  "blessing": "Nyaa be with you."
+}
