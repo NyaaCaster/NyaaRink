@@ -120,6 +120,8 @@ LE hook保留原消费者，已安装执行并用新TLS连接核验；证书有�
 
 P9完成：修复发行ec164bf已提交推送并部署；双平台客户端重新签名打包，独立上传后切换私密发行目录。restart完成DB备份、权威seq114校验、签名预检、nginx及真实CA/SNI HTTPS ready；app健康、gateway运行，镜像revision均ec164bf。生产Windows下载包SHA256、离线签名及两处客户端ACL修复通过，运行server生成脚本修复核验通过，MCP列表查询成功。9文件79项、typecheck/lint/build及Python3项通过。本轮临时文件清理，原有效授权保留；C端完整重试由用户重新下载脚本进行，A17未测项保留。最新交接011。
 
-## 12. P10 Windows ZIP 连接包 🟡
+## 12. P10 Windows ZIP 连接包 ✅
 
 用户批准 ZIP 并明确不改为 PS1。实施及验证范围见《阶段计划-P10.md》。Windows 入口调整为 ZIP（可读 BAT、独立授权配置、随包签名运行时 ZIP、说明），不再由编码下载器获取程序。仅本地展开仍使用明文 PowerShell；UAC 系统准备/检查逻辑保留。按钮名称不变，主动断开提示删除包及解压副本；A17未测项及厂商扫描待核实保留。
+
+2026-10-22 P10完成：9文件80项、typecheck/lint/build及Python3项通过；真实Windows BAT路径与篡改拒绝、浏览器ZIP/CSRF/限流回归通过。双平台重新签名发行、109项生产依赖许可证、镜像b7e71ce已发布并部署；DB及权威备份、seq122校验、签名预检、nginx、真实TLS ready、生产发行SHA256及只读MCP通过，原有效授权保留。完整用户重试、厂商扫描和A17未测项继续保留。最新交接012；文档提交与运行镜像SHA可不同。
