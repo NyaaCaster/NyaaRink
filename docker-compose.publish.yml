@@ -2,13 +2,13 @@ name: nyaarink
 services:
   app:
     image: ${PRIVATE_DOCKER_REGISTRY_HOST:?err}/nyaarink:${IMAGE_TAG:-latest}
-    user: "1000:1000"
+    user: "0:0"
     init: true
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:mode=1777,size=64m, /run/nyaarink:uid=1000,gid=1000,mode=0700,size=64m]
+    security_opt: [apparmor=unconfined]
+    tmpfs: ["/tmp:mode=1777,size=64m", "/run/nyaarink:uid=0,gid=0,mode=0700,size=64m"]
     mem_limit: 1g
     cpus: 2
     environment:
@@ -36,12 +36,13 @@ services:
       start_period: 15s
   gateway:
     image: ${PRIVATE_DOCKER_REGISTRY_HOST:?err}/nyaarink-gateway:${IMAGE_TAG:-latest}
-    user: "101:101"
+    user: "0:0"
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:mode=1777,size=32m]
+    cap_add: [SETGID]
+    security_opt: [apparmor=unconfined]
+    tmpfs: ["/tmp:mode=1777,size=32m"]
     mem_limit: 128m
     cpus: 0.5
     ports: ["${PUBLIC_PORT:-5116}:8443"]

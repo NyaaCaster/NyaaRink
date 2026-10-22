@@ -11,6 +11,14 @@ from backup import backup_database
 from scripts.ops import environment, main, run
 
 
+def writable_authority_mount(mount, authority):
+    """Only writable host binds can hold a competing authority writer."""
+    if mount.get("Type") != "bind" or not mount.get("RW", False) or not mount.get("Source"):
+        return False
+    source = Path(mount["Source"]).resolve()
+    return source == authority or source in authority.parents
+
+
 def execute():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--initialize', action='store_true', help='Only for a completely new empty authority')
@@ -55,7 +63,7 @@ def execute():
             ids = run(['docker', 'ps', '-q'], env, root, quiet=True).split()
             if ids:
                 running = json.loads(run(['docker', 'inspect'] + ids, env, root, quiet=True))
-                if any(Path(m.get('Source', '/')).resolve() == authority or Path(m.get('Source', '/')).resolve() in authority.parents
+                if any(writable_authority_mount(m, authority)
                        for c in running for m in c.get('Mounts', [])):
                     raise RuntimeError('Authority still mounted by a running writer')
             destination = state / 'backups' / ('release-' + str(uuid.uuid4()))

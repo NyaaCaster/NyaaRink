@@ -35,8 +35,9 @@ def verify(archive, target):
         assert b'listen 8443 ssl' in files['etc/nginx/nginx.conf']
         assert config['Entrypoint'] == ['nginx', '-g', 'daemon off;']
         return
-    assert config['Cmd'] == ['node', 'dist/server/index.js']
-    for name in ['dist/server/index.js', 'dist/server/maintenance.js', 'dist/server/proxy-client.js',
+    assert config['Entrypoint'] == ['flock', '--nonblock', '--no-fork', '/private/authority/.process.lock']
+    assert config['Cmd'] == ['node', 'dist/server/container-entry.js']
+    for name in ['dist/server/container-entry.js', 'dist/server/preflight.js', 'dist/server/index.js', 'dist/server/maintenance.js', 'dist/server/proxy-client.js',
                  'dist/cli/index.js', 'dist/web/index.html', 'LICENSE', 'THIRD-PARTY-NOTICES.md',
                  'dist/licenses/dependencies.json', 'dist/licenses/THIRD-PARTY-NOTICES.txt']:
         assert 'app/' + name in files, 'Missing required image file: ' + name

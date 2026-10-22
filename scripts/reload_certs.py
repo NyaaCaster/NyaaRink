@@ -15,6 +15,10 @@ def execute():
     args = parser.parse_args()
     root, env = environment()
     env['PATH'] = env.get('PATH', '') + ':/snap/bin'
+    key_uid = int(env.get('TLS_KEY_UID', '0'))
+    key_gid = int(env.get('TLS_KEY_GID', '0'))
+    if min(key_uid, key_gid) < 0:
+        raise ValueError('Invalid TLS key ownership')
     failed = False
     if not args.sync_only:
         previous = json.loads(env.get('CERT_PREVIOUS_RELOAD_JSON', '[]'))
@@ -41,7 +45,7 @@ def execute():
         for name in ['fullchain.pem', 'privkey.pem']:
             item = temp / name
             os.chmod(item, 0o600 if name == 'privkey.pem' else 0o644)
-            os.chown(item, 101 if name == 'privkey.pem' else 0, 101 if name == 'privkey.pem' else 0)
+            os.chown(item, key_uid if name == 'privkey.pem' else 0, key_gid if name == 'privkey.pem' else 0)
             os.replace(item, target / name)
     if not args.sync_only:
         compose = ['docker', 'compose', '--project-directory', str(root), '-f', str(root / 'docker-compose.yml')]

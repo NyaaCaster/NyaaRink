@@ -43,6 +43,13 @@ class RestartSafety(unittest.TestCase):
                     restart.execute()
             return commands, (authority / 'writer.lock').exists(), list((root / 'STATE_DIR').rglob('master.key')) != []
 
+    def test_mount_detection_excludes_tmpfs_and_readonly(self):
+        authority = Path('/private/authority').resolve()
+        self.assertFalse(restart.writable_authority_mount({'Type': 'tmpfs', 'RW': True}, authority))
+        self.assertFalse(restart.writable_authority_mount({'Type': 'bind', 'Source': str(authority.parent), 'RW': False}, authority))
+        self.assertTrue(restart.writable_authority_mount({'Type': 'bind', 'Source': str(authority.parent), 'RW': True}, authority))
+        self.assertTrue(restart.writable_authority_mount({'Type': 'bind', 'Source': str(authority), 'RW': True}, authority))
+
     def test_pull_failure_preserves_running_service(self):
         commands, locked, snapshot = self.exercise('pull')
         self.assertFalse(any('stop' in c for c in commands))
