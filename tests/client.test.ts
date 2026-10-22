@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { utils } from 'ssh2';
 import { install, localRevoke, type InstallHooks } from '../apps/client/src/install.js';
 import { StateStore, deviceKeys, type State } from '../apps/client/src/state.js';
@@ -12,6 +13,8 @@ import { token } from '../apps/server/src/crypto.js';
 import { connectionScript } from '../apps/server/src/artifacts.js';
 import type { BootstrapData } from '../packages/contracts/device.js';
 import { supportedSshVersion } from '../apps/client/src/platform.js';
+import { windowsInspectionScript } from '../apps/client/src/windows-inspection.js';
+import { windowsEnvironment } from '../apps/client/src/windows.js';
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -20,6 +23,34 @@ function bootstrap(): BootstrapData { return { v: 1, sessionId: randomUUID(), en
 function state(boot: BootstrapData): State { const pair = deviceKeys(); return { v: 1, bootstrap: boot, phase: 'ready', devicePrivateKey: pair.privateKey, devicePublicKey: pair.publicKey, runtime: root(), cleanup: 'pending', reported: false, releaseVersion: '0.1.0' }; }
 const ssh = () => utils.generateKeyPairSync('ed25519', {}).public;
 describe('C installation and irreversible cleanup', () => {
+  it('limits UAC inspection to the fixed sshd command for the original account', () => {
+    const script = windowsInspectionScript('ordinary.user', 22142);
+    expect(script).toContain('-Verb RunAs'); expect(script).toContain('PipeSecurity');
+    expect(script).not.toContain('bootstrap');
+    const encoded = /EncodedCommand','([A-Za-z0-9+/=]+)'/.exec(script)![1]!;
+    const child = Buffer.from(encoded, 'base64').toString('utf16le');
+    expect(child).toContain('TokenImpersonationLevel]::Anonymous');
+    expect(child).toContain('OpenSSH\\sshd.exe');
+    expect(child).toContain('-T -C \'user=ordinary.user,'); expect(child).toContain('lport=22142');
+    expect(child).not.toMatch(/client\.cjs|Set-Acl|Start-Service|Add-WindowsCapability/);
+    for (const account of ["user'; Start-Process cmd; '", 'user\nroot', 'user,host=other']) expect(() => windowsInspectionScript(account, 22)).toThrow('Unsafe');
+    expect(() => windowsInspectionScript('ordinary', 0)).toThrow('Unsafe');
+    expect(() => windowsInspectionScript('ordinary', 65536)).toThrow('Unsafe');
+  });
+  it.skipIf(process.platform !== 'win32')('parses both PowerShell scripts and exercises the real pipe without elevation', () => {
+    const script = windowsInspectionScript('ordinary.user', 22142);
+    const child = Buffer.from(/EncodedCommand','([A-Za-z0-9+/=]+)'/.exec(script)![1]!, 'base64').toString('utf16le');
+    for (const source of [script, child]) {
+      const encoded = Buffer.from(source, 'utf16le').toString('base64');
+      const parser = `$tokens=$null;$errors=$null;$null=[Management.Automation.Language.Parser]::ParseInput([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')),[ref]$tokens,[ref]$errors);if($errors.Count){throw ($errors|Out-String)}`;
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', parser], { env: windowsEnvironment(), windowsHide: true, timeout: 10000 });
+    }
+    // Exercise real Windows pipe ACLs and anonymous client transport, while
+    // deliberately avoiding UAC or any change to the existing SSH service.
+    const transport = script.replace('-Verb RunAs ', '');
+    const response = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(transport, 'utf16le').toString('base64')], { env: windowsEnvironment(), windowsHide: true, encoding: 'utf8', timeout: 60000 });
+    expect(typeof JSON.parse(response).ok).toBe('boolean');
+  }, 90000);
   it('enforces the approved OpenSSH minimum for both platforms', () => {
     expect(supportedSshVersion('OpenSSH_for_Windows_8.6p1, LibreSSL')).toBe(false);
     expect(supportedSshVersion('OpenSSH_8.9p1 Ubuntu')).toBe(true);

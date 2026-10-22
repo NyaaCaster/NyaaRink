@@ -7,6 +7,7 @@ import { durableWrite } from '../../server/src/crypto.js';
 import type { State } from './state.js';
 import { privatePath } from './state.js';
 import { windowsEnvironment } from './windows.js';
+import { windowsInspectionScript } from './windows-inspection.js';
 export type Confirm = (text: string) => Promise<boolean>;
 export function run(command: string, args: string[], env?: NodeJS.ProcessEnv) {
   return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 60000, env: env ?? process.env }).trim();
@@ -65,9 +66,18 @@ export async function localSsh(port: number, confirm: Confirm) {
   let text: string;
   try { text = run(sshdExecutable(), args); }
   catch (error) {
-    if (windows() || !await confirm('需要本地sudo只读检查目标账户的有效sshd配置，不更改账户、不上传私钥。是否继续？')) throw error;
-    const result = spawnSync('sudo', ['--', sshdExecutable(), ...args], { stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8' });
-    if (result.status !== 0) throw new Error('无法检查有效SSH配置；授权保留等待'); text = result.stdout;
+    if (windows()) {
+      if (!await confirm('需要通过Windows UAC以管理员权限只读检查sshd配置；SSH仍授权原账户，不返回主机私钥，不更改配置。是否继续？')) throw new Error('SSH配置检查提权未获确认；授权保留等待');
+      let result: unknown;
+      try { result = JSON.parse(powershell(windowsInspectionScript(account, port))); }
+      catch { throw new Error('SSH配置检查失败或UAC被拒绝；未改变目标账户，授权保留等待'); }
+      if (!result || typeof result !== 'object' || !('ok' in result) || result.ok !== true || !('config' in result) || typeof result.config !== 'string' || result.config.length > 262144) throw new Error('管理员只读SSH配置检查失败；授权保留等待');
+      text = result.config;
+    } else {
+      if (!await confirm('需要本地sudo只读检查目标账户的有效sshd配置，不更改账户、不上传私钥。是否继续？')) throw error;
+      const result = spawnSync('sudo', ['--', sshdExecutable(), ...args], { stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8' });
+      if (result.status !== 0) throw new Error('无法检查有效SSH配置；授权保留等待'); text = result.stdout;
+    }
   }
   const options = new Map(text.split(/\r?\n/).map(line => { const at = line.indexOf(' '); return [line.slice(0, at), line.slice(at + 1)] as const; }));
   if (options.get('pubkeyauthentication') !== 'yes' || options.get('authorizedkeyscommand') !== 'none') throw new Error('SSH public-key configuration unsupported; no global settings changed');
