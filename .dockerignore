@@ -21,6 +21,7 @@ sessions
 **/*.sqlite*
 **/*.log
 node_modules
+node_modules-p1-old
 dist
 build
 coverage

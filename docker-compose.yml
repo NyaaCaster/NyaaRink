@@ -1,0 +1,8 @@
+name: nyaarink
+services:
+  app:
+    extends: {file: docker-compose.publish.yml, service: app}
+    build: {context: ., target: app}
+  gateway:
+    extends: {file: docker-compose.publish.yml, service: gateway}
+    build: {context: ., target: gateway}

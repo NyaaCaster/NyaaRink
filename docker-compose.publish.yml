@@ -1,0 +1,50 @@
+name: nyaarink
+services:
+  app:
+    image: ${PRIVATE_DOCKER_REGISTRY_HOST:?err}/nyaarink:${IMAGE_TAG:-latest}
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:mode=1777,size=64m, /run/nyaarink:uid=1000,gid=1000,mode=0700,size=64m]
+    mem_limit: 1g
+    cpus: 2
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?err}
+      PUBLIC_PORT: ${PUBLIC_PORT:-5116}
+      MCP_API_KEY: ${MCP_API_KEY:?err}
+      MCP_API_KEY_PREVIOUS: ${MCP_API_KEY_PREVIOUS:-}
+      API_KEY_PREVIOUS_UNTIL: ${API_KEY_PREVIOUS_UNTIL:-}
+      STATE_DIR: /private/state
+      AUTHORITY_DIR: /private/authority
+      SESSION_MASTER_KEY_FILE: /private/master.key
+      TLS_CERT_DIR: /certs
+      CLIENT_ARTIFACT_DIR: /artifacts
+    volumes:
+      - ${STATE_DIR:?err}:/private/state
+      - ${AUTHORITY_DIR:?err}:/private/authority
+      - ${SESSION_MASTER_KEY_FILE:?err}:/private/master.key:ro
+      - ${TLS_CERT_DIR:?err}:/certs:ro
+      - ${CLIENT_ARTIFACT_DIR:?err}:/artifacts:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+  gateway:
+    image: ${PRIVATE_DOCKER_REGISTRY_HOST:?err}/nyaarink-gateway:${IMAGE_TAG:-latest}
+    user: "101:101"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:mode=1777,size=32m]
+    mem_limit: 128m
+    cpus: 0.5
+    ports: ["${PUBLIC_PORT:-5116}:8443"]
+    volumes: ["${TLS_CERT_DIR:?err}:/certs:ro"]
+    depends_on:
+      app: {condition: service_healthy}
