@@ -139,6 +139,6 @@ Windows真实便携认证、exec/PTY/SFTP、禁止转发、公钥移除、SSH命
 
 2026-10-22 用户普通账户实测补充：用户确认本次 C端为 Windows 普通账户。生产新版 ZIP 实际运行后，经 MCP 成功建立 SSH 连接、读取 Windows 11 系统信息，并在用户指定 Downloads 目录创建 hello.txt、写入及回读 hello；随后 C端主动断开。MCP 核验 authorization=revoked、connectivity=offline、sCleanup/cCleanup 均 confirmed；再次获取 SSH 配置返回 REVOKED。S端实际文件检查确认会话及邀请 vault 凭据不存在，临时 SSH 配置、私钥、known_hosts 和访问套接字目录已删除。 本次覆盖普通账户运行连接包、MCP/SSH 命令及文件写入、C端主动撤销与 S端凭据清理；普通账户注销/重启后登录自动恢复、域账户/企业策略、原生 Linux 完整生命周期、杀毒厂商复核及其余 A17 项目仍未测。详细证据见《验收记录.md》P12补充节。
 
-## 15. P13 Windows 连接 ZIP 单根目录 🟡
+## 15. P13 Windows 连接 ZIP 单根目录 ✅
 
-按用户要求，连接包四个文件统一放在 `NyaaRink-会话ID/`，内层签名运行时不变。具体计划见《阶段计划-P13.md》，完成后交接015。
+按用户要求，连接包四个文件统一放在 `NyaaRink-会话ID/`，内层签名运行时不变。具体计划见《阶段计划-P13.md》，当前交接015。双镜像8ce944b已部署，相关八项测试、生产ZIP四文件单根目录、内层摘要及真实TLS通过；权威文件和主密钥与切换前备份一致。
