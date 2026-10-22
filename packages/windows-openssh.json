@@ -1,0 +1,22 @@
+{
+  "version": "10.4.0.0p1-Preview",
+  "filename": "OpenSSH-Win64.zip",
+  "url": "https://github.com/PowerShell/Win32-OpenSSH/releases/download/10.4.0.0p1-Preview/OpenSSH-Win64.zip",
+  "sha256": "b67ff8becd203502190ec42ac7787c24c2cd3325ed7700485fe7a1c83d2a7957",
+  "files": [
+    "sshd.exe",
+    "sshd-auth.exe",
+    "sshd-session.exe",
+    "ssh-shellhost.exe",
+    "sftp-server.exe",
+    "libcrypto.dll"
+  ],
+  "signers": {
+    "sshd.exe": "1D77A9B9E8FE2075D9AD15123257FB90DB0DA4A1",
+    "sshd-auth.exe": "1D77A9B9E8FE2075D9AD15123257FB90DB0DA4A1",
+    "sshd-session.exe": "AB172913A2960A224809EE8A0C371CD47A079B72",
+    "ssh-shellhost.exe": "AB172913A2960A224809EE8A0C371CD47A079B72",
+    "sftp-server.exe": "AB172913A2960A224809EE8A0C371CD47A079B72",
+    "libcrypto.dll": "C18BBD6EF7A93BF993072A3724004FF0357255D7"
+  }
+}

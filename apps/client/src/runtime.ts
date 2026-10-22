@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, chmodSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, chmodSync, readFileSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { VERSION } from '@nyaarink/version';
 import { verifyRelease } from './release.js';
@@ -8,7 +8,8 @@ import { privatePath, stateRoot } from './state.js';
 export function installRuntime(source: string, root = stateRoot()) {
   source = resolve(source); verifyRelease(source, VERSION);
   mkdirSync(root, { recursive: true, mode: 0o700 }); privatePath(root, true);
-  const directory = join(root, `runtime-${VERSION}-${process.platform}-${process.arch}`);
+  const content = createHash('sha256').update(readFileSync(join(source, 'manifest.json'))).digest('hex');
+  const directory = join(root, `runtime-${VERSION}-${process.platform}-${process.arch}-${content}`);
   if (existsSync(directory)) { privatePath(directory, true); verifyRelease(directory, VERSION); return directory; }
   const staging = join(root, `.runtime-${randomUUID()}`);
   mkdirSync(staging, { mode: 0o700 }); privatePath(staging, true);
