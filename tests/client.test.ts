@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { utils } from 'ssh2';
+import { acceptsConfirmation } from '../apps/client/src/confirmation.js';
 import { install, localRevoke, type InstallHooks } from '../apps/client/src/install.js';
 import { StateStore, deviceKeys, privatePath, type State } from '../apps/client/src/state.js';
 import { changeKey, keyLine } from '../apps/client/src/keys.js';
@@ -23,6 +24,12 @@ function bootstrap(): BootstrapData { return { v: 1, sessionId: randomUUID(), en
 function state(boot: BootstrapData): State { const pair = deviceKeys(); return { v: 1, bootstrap: boot, phase: 'ready', devicePrivateKey: pair.privateKey, devicePublicKey: pair.publicKey, runtime: root(), cleanup: 'pending', reported: false, releaseVersion: '0.1.0' }; }
 const ssh = () => utils.generateKeyPairSync('ed25519', {}).public;
 describe('C installation and irreversible cleanup', () => {
+  it('accepts explicit YES regardless of casing and surrounding whitespace', () => {
+    for (const answer of ['YES', 'yes', 'Yes', 'yEs', '  yes  ', '\tYES\r\n']) expect(acceptsConfirmation(answer), JSON.stringify(answer)).toBe(true);
+  });
+  it('does not treat empty, abbreviated, negative or extended input as consent', () => {
+    for (const answer of ['', ' ', 'y', 'Y', 'no', 'NO', 'true', '1', '确认', 'YES please', 'not YES', 'YES!', 'Y ES', 'YES\nNO', 'ＹＥＳ']) expect(acceptsConfirmation(answer), JSON.stringify(answer)).toBe(false);
+  });
   it.skipIf(process.platform !== 'win32')('sets private directory/file DACLs and preserves existing SSH ACLs without audit privilege', () => {
     if (process.env.NR_REQUIRE_NO_SECURITY_PRIVILEGE === '1') {
       expect(execFileSync('whoami.exe', ['/priv'], { encoding: 'utf8' })).not.toContain('SeSecurityPrivilege');

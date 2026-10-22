@@ -10,11 +10,12 @@ import { DeviceApi } from './api.js';
 import { StateStore } from './state.js';
 import { installRuntime } from './runtime.js';
 import { runTunnel } from './tunnel.js';
+import { acceptsConfirmation } from './confirmation.js';
 
 async function confirm(text: string) {
   if (!stdin.isTTY) throw new Error('需要交互终端确认，请在本机终端运行');
   const terminal = createInterface({ input: stdin, output: stdout });
-  try { return (await terminal.question(`${text}\n输入 YES 继续：`)).trim() === 'YES'; } finally { terminal.close(); }
+  try { return acceptsConfirmation(await terminal.question(`${text}\n输入 YES 或 yes 继续（其他输入取消）：`)); } finally { terminal.close(); }
 }
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
